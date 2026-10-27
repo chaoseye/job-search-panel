@@ -1,0 +1,13 @@
+# Job Search Panel — README. app.log and cli.log rotate inside the panel (10 MB x 5); claude_run.log only grows
+# (a tail of every background `claude -p` run is appended), so it is rotated here.
+/srv/jobsearchpanel/app/logs/claude_run.log {
+    su jobpanel jobpanel
+    weekly
+    rotate 8
+    maxsize 5M
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}

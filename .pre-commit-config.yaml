@@ -1,0 +1,39 @@
+# Установка: backend\.venv\Scripts\python -m pip install pre-commit && backend\.venv\Scripts\python -m pre_commit install
+# Запуск вручную: backend\.venv\Scripts\python -m pre_commit run --all-files   (или .\run.ps1 lint)
+exclude: '^\.claude/skills/'
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: end-of-file-fixer
+        exclude: '\.(md|ps1)$'
+      - id: trailing-whitespace
+        exclude: '\.(md|ps1)$'
+      - id: check-yaml
+      - id: check-json
+        exclude: '^frontend/tsconfig.*\.json$'
+      - id: check-added-large-files
+        args: ['--maxkb=2048']
+      - id: detect-private-key
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.7
+    hooks:
+      - id: ruff
+        args: ['--fix']
+        files: '^backend/'
+      - id: ruff-format
+        files: '^backend/'
+  - repo: local
+    hooks:
+      - id: mypy-backend
+        name: mypy (backend app/, strict)
+        # uses the project venv so the checked code and its dependencies match the runtime
+        entry: bash -c 'cd backend && .venv/Scripts/python.exe -m mypy'
+        language: system
+        pass_filenames: false
+        files: '^backend/app/'
+      - id: no-env-file
+        name: .env must never be committed
+        entry: bash -c 'echo ".env is ignored — never commit secrets"; exit 1'
+        language: system
+        files: '^\.env$'

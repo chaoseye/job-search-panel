@@ -1,0 +1,40 @@
+# Run by jobsearchpanel-health.timer. Three failed /api/health in a row (6 min) of a running service → restart and a
+# message to the bot; a crash restarted by systemd → a message too. A stopped service (systemctl stop, update.sh,
+# the move back to the laptop) is left alone — README («Мониторинг»)
+[Unit]
+Description=Job Search Panel: проверка живости
+After=jobsearchpanel.service
+
+[Service]
+Type=oneshot
+# root: `systemctl restart` (systemd accepts it from uid 0 without capabilities); the message goes from notify.py as
+# jobpanel through setpriv — the only capabilities left are the two that switch the user
+ExecStart=/bin/bash /srv/jobsearchpanel/app/deploy/linux/health.sh
+StateDirectory=jobsearchpanel-health
+TimeoutStartSec=300
+Nice=10
+UMask=0077
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID
+AmbientCapabilities=
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@resources
+SystemCallErrorNumber=EPERM

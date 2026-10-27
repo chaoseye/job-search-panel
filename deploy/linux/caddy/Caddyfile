@@ -1,0 +1,17 @@
+# /etc/caddy/Caddyfile — the reverse proxy of this server (Caddy), installed for Job Search Panel; /srv/README.
+# Every service keeps its site in a file of its own in /etc/caddy/sites/ (Job Search Panel: jobsearchpanel.caddy,
+# written by deploy/linux/proxy.sh). After a change: `caddy validate --config /etc/caddy/Caddyfile`, then
+# `systemctl restart caddy` (with the admin API off a reload is a restart).
+{
+	# no admin API on localhost:2019: any local user could reconfigure the proxy through it
+	admin off
+	# only 443: no HTTP→HTTPS redirect server on 80; certificates come by TLS-ALPN-01 on 443 (each site turns the
+	# HTTP challenge off in its tls block)
+	auto_https disable_redirects
+	servers {
+		# no HTTP/3: UDP 443 is closed in ufw
+		protocols h1 h2
+	}
+}
+
+import sites/*.caddy

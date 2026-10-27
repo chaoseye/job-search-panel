@@ -1,0 +1,106 @@
+{
+  "id": 5,
+  "hh_id": "555001",
+  "name": "Senior Python Developer (FastAPI)",
+  "employer": {
+    "id": "1455",
+    "name": "Рога и копыта",
+    "accredited_it": true,
+    "trusted": true
+  },
+  "area_name": "Москва",
+  "address": null,
+  "metro": [],
+  "salary": {
+    "from": 300000,
+    "to": 400000,
+    "currency": "RUR",
+    "gross": true,
+    "net_estimate": 348000,
+    "net_rur": 348000
+  },
+  "experience_name": "От 3 до 6 лет",
+  "employment_form_name": "Полная",
+  "work_formats": [
+    "Удалённо"
+  ],
+  "work_format_ids": [
+    "REMOTE"
+  ],
+  "published_at": "2026-09-10T07:00:00+00:00",
+  "first_seen_at": "2026-09-23T22:40:30+00:00",
+  "responses_count": 42,
+  "duplicate_of_id": null,
+  "sources": [],
+  "flags": [],
+  "pipeline_status": "already_applied",
+  "status_label": "уже есть отклик",
+  "pipeline_reason": "по вакансии уже есть отклик/приглашение",
+  "prescore": null,
+  "score": null,
+  "verdict": null,
+  "letter_status": "none",
+  "batch_id": null,
+  "selection_profile_id": null,
+  "selection_profile_name": null,
+  "alternate_url": "https://hh.ru/vacancy/555001",
+  "apply_alternate_url": "https://hh.ru/applicant/vacancy_response?vacancyId=555001",
+  "is_new": true,
+  "snoozed_until": null,
+  "hidden": false,
+  "user_override": false,
+  "archived": false,
+  "has_full": true,
+  "description_html": "<p>Ищем <strong>Python</strong>-разработчика в команду платежей.</p><ul><li>FastAPI, PostgreSQL, Docker</li><li>Опыт с Kafka будет плюсом</li></ul><p>Удалённо, полная занятость.</p><a rel=\"noopener noreferrer nofollow\">x</a>",
+  "description_text": "Ищем Python-разработчика в команду платежей.\n\n• FastAPI, PostgreSQL, Docker\n\n• Опыт с Kafka будет плюсом\n\nУдалённо, полная занятость.\nx",
+  "key_skills": [
+    {
+      "name": "Python",
+      "matched": false
+    },
+    {
+      "name": "FastAPI",
+      "matched": false
+    },
+    {
+      "name": "PostgreSQL",
+      "matched": false
+    },
+    {
+      "name": "Kafka",
+      "matched": false
+    }
+  ],
+  "professional_roles": [
+    "Программист, разработчик"
+  ],
+  "tags": {
+    "domain": [
+      "финтех и банки"
+    ],
+    "tasks": [],
+    "stack": [
+      "SQL / PostgreSQL",
+      "Python",
+      "FastAPI / Django / Flask",
+      "Airflow / Kafka / Spark",
+      "Docker / Kubernetes"
+    ]
+  },
+  "rules_reasons": [],
+  "prescore_notes": [],
+  "relations": [],
+  "response_letter_required": true,
+  "has_test": false,
+  "test_required": false,
+  "type_id": "open",
+  "response_url": null,
+  "full_fetched_at": "2026-09-23T22:40:30+00:00",
+  "skip_reason": null,
+  "question_answers": [],
+  "evaluation": null,
+  "letter": null,
+  "letters": [],
+  "revision_request": null,
+  "history": []
+}

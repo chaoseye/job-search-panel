@@ -1,0 +1,15 @@
+Explanation: /etc/apt/preferences.d/caddy-cloudsmith - Job Search Panel (/srv/README; README, «Ограничения Caddy»).
+Explanation: The repository of Caddy (dl.cloudsmith.io) gives this server the caddy package and nothing else: any other
+Explanation: package from it gets -1 and is never installed. Not 100: unattended-upgrades (from origin
+Explanation: cloudsmith/caddy/stable as root) pins the origins it does not allow to -32768 in its own cache, so there
+Explanation: an installed package from e.g. noble-updates weighs only 100 (dpkg status), and a package of the same name
+Explanation: and a higher version at 100 would win. Written by proxy.sh install.
+Package: *
+Pin: origin dl.cloudsmith.io
+Pin-Priority: -1
+
+Explanation: caddy itself as before: priority 500, as the system repositories have, so the newer version wins. A record
+Explanation: for a package outweighs the record for all of them.
+Package: caddy
+Pin: origin dl.cloudsmith.io
+Pin-Priority: 500

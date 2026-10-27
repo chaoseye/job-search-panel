@@ -1,0 +1,39 @@
+# OnFailure= of jobsearchpanel.service: a message to the bot when the service stays down (deploy/linux/alert.sh —
+# systemd also starts it for a crash it is about to restart, that one is reported by the health check).
+# README («Мониторинг»)
+[Unit]
+Description=Job Search Panel: сообщение в бота об остановке службы
+
+[Service]
+Type=oneshot
+User=jobpanel
+Group=jobpanel
+ExecStart=/bin/bash /srv/jobsearchpanel/app/deploy/linux/alert.sh
+TimeoutStartSec=60
+# sandbox: reads .env and the base read-only, talks to systemd (D-Bus) and to api.telegram.org
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+# no RemoveIPC: it would clear the IPC of the user jobpanel, whose main service keeps running
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM

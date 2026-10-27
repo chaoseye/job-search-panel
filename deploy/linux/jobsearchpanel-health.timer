@@ -1,0 +1,11 @@
+# Liveness check of Job Search Panel every 2 minutes — README («Мониторинг»)
+[Unit]
+Description=Job Search Panel: проверка /api/health раз в 2 минуты
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=2min
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

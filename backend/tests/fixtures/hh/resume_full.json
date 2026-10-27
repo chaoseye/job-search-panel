@@ -1,0 +1,66 @@
+{
+  "id": "0123456789abcdef0123456789abcdef012345",
+  "title": "Python-разработчик (backend)",
+  "first_name": "Иван",
+  "last_name": "Иванов",
+  "middle_name": "Иванович",
+  "age": 31,
+  "area": {"id": "1", "name": "Москва", "url": "https://api.hh.ru/areas/1"},
+  "salary": {"amount": 250000, "currency": "RUR"},
+  "total_experience": {"months": 88},
+  "skill_set": ["Python", "FastAPI", "PostgreSQL", "Docker"],
+  "skills": "Люблю строить надёжные сервисы и писать тесты.",
+  "experience": [
+    {
+      "company": "Рога и копыта",
+      "position": "Senior Python Developer",
+      "start": "2022-03-01",
+      "end": null,
+      "description": "Проектировал и вёл backend платёжного сервиса.\nСократил p95 latency с 800 до 120 мс.",
+      "industries": [{"id": "7.513", "name": "Интернет-компания"}],
+      "area": {"id": "1", "name": "Москва", "url": "https://api.hh.ru/areas/1"},
+      "company_url": "https://example.com",
+      "employer": {"id": "1455", "name": "Рога и копыта"}
+    },
+    {
+      "company": null,
+      "position": "Python Developer",
+      "start": "2018-07-01",
+      "end": "2022-02-01",
+      "description": "Разработка внутренних инструментов.",
+      "industries": [],
+      "area": null,
+      "employer": {"id": "42", "name": "ООО Старт"}
+    }
+  ],
+  "education": {
+    "level": {"id": "higher", "name": "Высшее"},
+    "primary": [
+      {"name": "МГУ", "organization": "ВМК", "result": "Прикладная математика", "year": 2017}
+    ],
+    "additional": [
+      {"name": "Курс по Kubernetes", "organization": "Slurm", "result": null, "year": 2021}
+    ]
+  },
+  "language": [
+    {"id": "rus", "name": "Русский", "level": {"id": "l1", "name": "Родной"}},
+    {"id": "eng", "name": "Английский", "level": {"id": "b2", "name": "B2 — Средне-продвинутый"}}
+  ],
+  "professional_roles": [{"id": "96", "name": "Программист, разработчик"}],
+  "relocation": {"type": {"id": "no_relocation", "name": "не готов к переезду"}, "area": []},
+  "business_trip_readiness": {"id": "sometimes", "name": "готов к редким командировкам"},
+  "work_format": [{"id": "REMOTE", "name": "Удалённо"}, {"id": "HYBRID", "name": "Гибрид"}],
+  "employment_form": [{"id": "FULL", "name": "Полная"}],
+  "schedules": [{"id": "remote", "name": "Удаленная работа"}],
+  "employments": [{"id": "full", "name": "Полная занятость"}],
+  "certificate": [{"title": "AWS Certified Developer", "achieved_at": "2023-05-01", "type": "custom", "url": null}],
+  "site": [{"type": {"id": "personal", "name": "Другой сайт"}, "url": "https://github.com/ivanov"}],
+  "citizenship": [{"id": "113", "name": "Россия"}],
+  "status": {"id": "published", "name": "опубликовано"},
+  "can_publish_or_update": true,
+  "next_publish_at": "2026-09-12T10:00:00+0300",
+  "updated_at": "2026-09-10T12:00:00+0300",
+  "alternate_url": "https://hh.ru/resume/0123456789abcdef0123456789abcdef012345",
+  "hidden_fields": [],
+  "unknown_future_field": {"x": 1}
+}

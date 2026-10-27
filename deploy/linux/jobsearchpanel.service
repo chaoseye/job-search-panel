@@ -1,0 +1,87 @@
+# Job Search Panel on a Linux server — README.
+# install.sh / update.sh copy this file to /etc/systemd/system/ (only when it changed, with a check that no other
+# service waits for a daemon-reload). The sandbox lines are mirrored in lib.sh (SANDBOX_PROPS) for test runs.
+[Unit]
+Description=Job Search Panel: панель вакансий hh.ru
+Documentation=file:/srv/jobsearchpanel/app/README.md
+After=network-online.target time-sync.target
+Wants=network-online.target
+# five failed starts in ten minutes leave the unit failed; jobsearchpanel-alert.service then writes to the bot
+StartLimitIntervalSec=600
+StartLimitBurst=5
+OnFailure=jobsearchpanel-alert.service
+
+[Service]
+Type=exec
+User=jobpanel
+Group=jobpanel
+WorkingDirectory=/srv/jobsearchpanel/app/backend
+# The panel keeps its schedule in TIMEZONE of .env by itself; TZ gives the process the same local time (backup file
+# names, log timestamps). The server clock stays UTC, as other services expect.
+Environment=TZ=Europe/Moscow
+Environment=PYTHONUTF8=1 PYTHONIOENCODING=utf-8 PYTHONDONTWRITEBYTECODE=1
+Environment=HOME=/srv/jobsearchpanel/home
+Environment=PATH=/srv/jobsearchpanel/home/.local/bin:/usr/local/bin:/usr/bin:/bin
+# the background `claude -p` stays on the version checked with this sandbox; it is updated on purpose
+# (README, «Claude Code»)
+Environment=DISABLE_AUTOUPDATER=1
+# the ports are fixed: Redirect URI of the hh.ru application and the SSH tunnel of the laptop point to 8000; the reverse
+# proxy of the public address (deploy/linux/caddy) to 8100 — that second listener opens only when PANEL_PUBLIC_URL is
+# set in .env (README, «Вход из браузера»). app.server is uvicorn with both sockets and no access log
+Environment=APP_HOST=127.0.0.1 APP_PORT=8000 PANEL_PUBLIC_PORT=8100
+ExecStart=/srv/jobsearchpanel/app/backend/.venv/bin/python -m app.server
+Restart=on-failure
+RestartSec=10
+# migrations run at start (seconds); the stop waits for the jobs to be cancelled and the journal record
+TimeoutStartSec=300
+TimeoutStopSec=60
+# logs/app.log is the log (the panel rotates it); stdout repeats it, errors and tracebacks go to the journal
+StandardOutput=null
+StandardError=journal
+SyslogIdentifier=jobsearchpanel
+
+# resources: the other services of the server win when the CPU or the disk are contended
+MemoryHigh=1200M
+MemoryMax=1600M
+CPUQuota=200%
+CPUWeight=50
+IOWeight=50
+Nice=5
+TasksMax=512
+LimitNOFILE=8192
+LimitCORE=0
+
+# sandbox: the code is read-only; writable are data/, logs/ and the home of jobpanel (Claude Code, its login)
+UMask=0027
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/srv/jobsearchpanel/app/data /srv/jobsearchpanel/app/logs /srv/jobsearchpanel/home
+InaccessiblePaths=-/srv/jobsearchpanel/incoming
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+# AF_NETLINK: interface queries (getifaddrs) of glibc and of the claude CLI runtime
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+# a refused system call fails with EPERM instead of killing the process (the claude CLI tunes its threads)
+SystemCallErrorNumber=EPERM
+# no MemoryDenyWriteExecute: the claude CLI is a JavaScript runtime that compiles code at run time
+
+[Install]
+WantedBy=multi-user.target

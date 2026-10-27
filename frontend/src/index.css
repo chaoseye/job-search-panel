@@ -1,0 +1,123 @@
+@import "tailwindcss";
+
+/* Design tokens of the 2026-10 redesign (README «Дизайн-система»). Colours are OKLCH: cool neutrals
+ * (hue 262, low chroma), one cobalt accent for links, focus and selection, an ink fill for the primary button and
+ * three semantic pairs (good / warn / bad) — every text colour passes 4.5:1 on its surface. */
+@theme {
+  --font-ui: "Golos Text Variable", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+
+  --color-canvas: oklch(97.6% 0.004 262);
+  --color-surface: oklch(99.7% 0.0008 262);
+  --color-sunken: oklch(96.3% 0.006 262);
+  --color-selected: oklch(93.8% 0.01 262);
+  --color-rule: oklch(94.6% 0.006 262);
+  --color-line: oklch(91.2% 0.008 262);
+  --color-line-strong: oklch(84.5% 0.012 262);
+  --color-ink: oklch(24.5% 0.022 264);
+  --color-ink-hover: oklch(33% 0.024 264);
+  --color-ink-2: oklch(44% 0.02 264);
+  --color-ink-3: oklch(53.5% 0.018 264);
+  --color-accent: oklch(51% 0.165 260);
+  --color-accent-strong: oklch(44.5% 0.16 260);
+  --color-accent-soft: oklch(95.4% 0.019 260);
+  --color-focus: oklch(58% 0.19 260);
+  --color-good: oklch(46.5% 0.115 152);
+  --color-good-soft: oklch(95.4% 0.034 152);
+  --color-warn: oklch(49% 0.105 65);
+  --color-warn-soft: oklch(96% 0.038 85);
+  --color-bad: oklch(50.5% 0.175 27);
+  --color-bad-soft: oklch(96% 0.017 27);
+
+  /* 12 / 13 / 14 / 15 / 18 / 24 — xs, caption, sm, prose, lg, 2xl */
+  --text-caption: 0.8125rem;
+  --text-caption--line-height: 1.125rem;
+  --text-prose: 0.9375rem;
+  --text-prose--line-height: 1.6;
+
+  /* shadows only on floating layers: menus, popovers, sheets */
+  --shadow-pop: 0 1px 2px oklch(24.5% 0.022 264 / 0.06), 0 10px 28px -6px oklch(24.5% 0.022 264 / 0.18);
+  --shadow-sheet: 0 0 0 1px oklch(24.5% 0.022 264 / 0.06), -16px 0 40px -12px oklch(24.5% 0.022 264 / 0.22);
+
+  --ease-out-strong: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+
+  /* the board: a ring around the column a card has just moved to (motion-safe only) */
+  --animate-arrive: arrive 0.7s var(--ease-out-strong);
+  @keyframes arrive {
+    0% {
+      box-shadow: 0 0 0 0 color-mix(in oklch, var(--color-accent) 45%, transparent);
+    }
+    100% {
+      box-shadow: 0 0 0 10px transparent;
+    }
+  }
+}
+
+:root {
+  color-scheme: light;
+}
+
+/* the scroll lock of a sheet hides the page scrollbar: the gutter stays, so the page does not jump sideways */
+html {
+  scrollbar-gutter: stable;
+}
+
+body {
+  @apply bg-canvas font-ui text-ink antialiased;
+}
+
+@layer base {
+  /* one focus ring for whatever has no ring of its own (links in text, native controls) */
+  :where(a, button, summary, [tabindex]):focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+  }
+
+  /* a grid cell may shrink below its content: one long nowrap line or a wide table must not widen the page on a phone */
+  :where(.grid) > * {
+    min-width: 0;
+  }
+}
+
+/* Custom classes live in the components layer, so plain utilities (w-auto, mt-2, …) can override them. Buttons, fields,
+ * badges and panels are React components in components/ui; here is only what a utility can not say. */
+@layer components {
+  /* Rows of the vacancy list: a four-line card on a phone, a table row from 768 px; the publication age and the
+   * responses get columns of their own from 1280 px (before that they ride on the second line). */
+  .vrow {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas:
+      "score title"
+      "score meta"
+      "score facts"
+      "score status";
+    column-gap: 0.75rem;
+    row-gap: 0.125rem;
+    align-items: start;
+  }
+  @media (width >= 48rem) {
+    .vrow {
+      grid-template-columns: 1.25rem 2.75rem minmax(0, 1fr) 10.5rem 9.5rem;
+      grid-template-areas:
+        "check score title salary status"
+        "check score meta salary status";
+      column-gap: 1rem;
+      align-items: center;
+    }
+    .vrow-head {
+      grid-template-areas: "check score title salary status";
+    }
+  }
+  @media (width >= 80rem) {
+    .vrow {
+      grid-template-columns: 1.25rem 2.75rem minmax(0, 1fr) 10.5rem 4.5rem 5rem 9.5rem;
+      grid-template-areas:
+        "check score title salary age responses status"
+        "check score meta salary age responses status";
+    }
+    .vrow-head {
+      grid-template-areas: "check score title salary age responses status";
+    }
+  }
+}

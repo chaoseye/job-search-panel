@@ -1,0 +1,35 @@
+# secrets and local data
+.env
+.env.*
+!.env.example
+data/
+logs/
+# the server of the panel and its keys (deploy/windows/remote.py, README)
+.panel-remote.json
+
+# python
+backend/.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+
+# node
+frontend/node_modules/
+frontend/dist/
+# the previous interface and an unpacked one on the server (deploy/linux/lib.sh install_dist)
+frontend/dist.prev/
+frontend/.dist.*/
+frontend/.vite/
+
+# editors / os
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

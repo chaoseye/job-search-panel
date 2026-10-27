@@ -1,0 +1,20 @@
+# Job Search Panel — the public address (README, «Вход из браузера»). deploy/linux/proxy.sh writes this file to
+# /etc/caddy/sites/jobsearchpanel.caddy with the domain filled in (it must equal PANEL_PUBLIC_URL of the panel).
+__DOMAIN__ {
+	# Let's Encrypt by TLS-ALPN-01 on 443 only; Caddy renews the certificate by itself
+	tls {
+		issuer acme {
+			disable_http_challenge
+		}
+	}
+	# resume files go up to 10 MB
+	request_body {
+		max_size 12MB
+	}
+	encode zstd gzip
+	# The public entrance of the panel (PANEL_PUBLIC_PORT, app/server.py): there every request needs a session from
+	# the bot's one-time link, and the panel tells it from the tunnel by this port. Caddy passes Host as it came and
+	# sets X-Forwarded-For to the client's address (the panel shows it in the sign-in message).
+	reverse_proxy 127.0.0.1:__PORT__
+	# No `log` directive on purpose: an access log would keep the sign-in link with its token.
+}
