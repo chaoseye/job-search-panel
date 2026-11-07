@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
@@ -18,9 +19,14 @@ from app.services.state import auth_public_state, get_hh_auth
 log = structlog.get_logger("scheduler")
 # how often the probe tick looks whether PROBE_INTERVAL_DAYS have passed since the last probe
 PROBE_CHECK_HOURS = 6
-# how often the tick of the responses counter looks whether RESPONSES_REFRESH_HOURS have passed since the last pass:
-# a pass the scan kept from starting is tried again a quarter of an hour later, not three hours later
+# how often the tick of the responses counter looks whether RESPONSES_REFRESH_HOURS have passed since the last pass
 RESPONSES_TICK_MIN = 15
+# The tick of the responses counter falls on a tick of the scan: interval ticks count from the start of the service and
+# 15 = 3 × 5 (SCAN_TICK_MIN), and the scan it meets runs a couple of seconds. A tick that tried once lost to it every
+# time, and the pass never ran. So it waits for the group to free up, trying every RESPONSES_RETRY_SEC, at most
+# RESPONSES_WAIT_SEC (less than the interval: ticks never overlap)
+RESPONSES_WAIT_SEC = 10 * 60
+RESPONSES_RETRY_SEC = 5
 
 
 async def auth_check(runtime: Runtime) -> None:
@@ -322,19 +328,35 @@ async def freshness_tick(runtime: Runtime) -> None:
         log.info("freshness_tick_skipped_busy")
 
 
-async def responses_tick(runtime: Runtime) -> None:
-    """The responses counter from fresh search results (job `responses`) every RESPONSES_REFRESH_HOURS hours."""
-    from app.services.responses_refresh import JOB, refresh_due, refresh_responses
+async def _responses_due(runtime: Runtime) -> bool:
+    from app.services.responses_refresh import refresh_due
 
     async with runtime.session_factory() as session:
-        state = auth_public_state(await get_hh_auth(session))
-        due = await refresh_due(session, runtime.settings.responses_refresh_hours)
-    if not state["logged_in"] or not due:
-        return
-    try:
-        await runtime.jobs.start(JOB, lambda: refresh_responses(runtime))
-    except JobBusy:
-        log.info("responses_tick_skipped_busy")
+        if not auth_public_state(await get_hh_auth(session))["logged_in"]:
+            return False
+        return await refresh_due(session, runtime.settings.responses_refresh_hours)
+
+
+async def responses_tick(runtime: Runtime) -> None:
+    """The responses counter from fresh search results (job `responses`) every RESPONSES_REFRESH_HOURS hours. While
+    another job of the group runs (the scan of the same second) the tick waits for it, up to RESPONSES_WAIT_SEC; it
+    asks again whether the pass is due before every try, so a pass the button of «Журнал» ran meanwhile is not
+    repeated, and a pass of its own that is still running is not waited for."""
+    from app.services.responses_refresh import JOB, refresh_responses
+
+    waited = 0.0
+    while await _responses_due(runtime):
+        try:
+            await runtime.jobs.start(JOB, lambda: refresh_responses(runtime))
+            return
+        except JobBusy as exc:
+            if exc.running == JOB:
+                return
+            if waited >= RESPONSES_WAIT_SEC:
+                log.info("responses_tick_skipped_busy", running=exc.running, waited_sec=int(waited))
+                return
+        await asyncio.sleep(RESPONSES_RETRY_SEC)
+        waited += RESPONSES_RETRY_SEC
 
 
 async def mail_tick(runtime: Runtime) -> None:

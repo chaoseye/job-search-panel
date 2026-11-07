@@ -4,6 +4,7 @@ searches for the last days and updates the counter of the vacancies it has — a
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import timedelta
 from typing import Any
@@ -12,6 +13,7 @@ import httpx
 import respx
 from sqlalchemy import func, select
 
+from app import scheduler as scheduler_module
 from app.db.base import as_utc, utcnow
 from app.db.models import AuditLog, JobRun, SavedSearch, Vacancy
 from app.scheduler import build_scheduler, responses_tick
@@ -252,3 +254,72 @@ async def test_the_scheduler_has_the_tick_unless_it_is_turned_off(api) -> None:
     assert tick.trigger.interval == timedelta(minutes=15)
     runtime.settings = runtime.settings.model_copy(update={"responses_refresh_hours": 0})
     assert "responses_refresh" not in {j.id for j in build_scheduler(runtime).get_jobs()}
+
+
+async def _hold(runtime, job: str) -> asyncio.Event:  # type: ignore[no-untyped-def]
+    """Starts a job of the group that runs until the returned event is set (a scan that takes its time)."""
+    release = asyncio.Event()
+
+    async def body() -> dict[str, Any]:
+        await release.wait()
+        return {}
+
+    await runtime.jobs.start(job, body)
+    return release
+
+
+@respx.mock(assert_all_called=False)
+async def test_the_tick_waits_for_the_scan_it_falls_on(api, respx_mock: respx.MockRouter, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """The tick of the counter and the tick of the scan count from the start of the service (15 = 3 × 5) and fall on
+    the same second; a tick that tried once always lost to the scan, and the pass never ran."""
+    client, runtime = api
+    await _login(client, respx_mock)
+    await _seed(runtime)
+    route = _search_mock(respx_mock)
+    monkeypatch.setattr(scheduler_module, "RESPONSES_RETRY_SEC", 0.01)
+    release = await _hold(runtime, "scan")
+
+    tick = asyncio.create_task(responses_tick(runtime))
+    await asyncio.sleep(0.1)
+    assert not tick.done() and not runtime.jobs.is_running(JOB) and route.call_count == 0  # waits, does not give up
+    release.set()
+    await runtime.jobs.wait("scan")
+    await asyncio.wait_for(tick, 5)
+    await runtime.jobs.wait(JOB)
+    assert route.call_count == 3
+    async with runtime.session_factory() as session:
+        run = (await session.execute(select(JobRun).where(JobRun.job == JOB))).scalar_one()
+        assert run.status == "ok"
+
+
+@respx.mock(assert_all_called=False)
+async def test_the_tick_gives_up_when_the_group_stays_busy(api, respx_mock: respx.MockRouter, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    client, runtime = api
+    await _login(client, respx_mock)
+    monkeypatch.setattr(scheduler_module, "RESPONSES_RETRY_SEC", 0.01)
+    monkeypatch.setattr(scheduler_module, "RESPONSES_WAIT_SEC", 0.05)
+    release = await _hold(runtime, "reprocess")
+    await asyncio.wait_for(responses_tick(runtime), 5)  # the re-evaluation outlasts the wait: the next tick tries again
+    assert not runtime.jobs.is_running(JOB)
+    async with runtime.session_factory() as session:
+        assert (await session.execute(select(func.count(JobRun.id)).where(JobRun.job == JOB))).scalar() == 0
+    release.set()
+    await runtime.jobs.wait("reprocess")
+
+
+@respx.mock(assert_all_called=False)
+async def test_the_tick_does_not_wait_for_a_pass_of_its_own(api, respx_mock: respx.MockRouter) -> None:
+    """A pass started more than RESPONSES_REFRESH_HOURS ago is still running (hh.ru slow): the tick is due, but it
+    neither waits the ten minutes for it nor starts another."""
+    client, runtime = api
+    await _login(client, respx_mock)
+    release = await _hold(runtime, JOB)
+    async with runtime.session_factory() as session:
+        run = (await session.execute(select(JobRun).where(JobRun.job == JOB))).scalar_one()
+        run.started_at = utcnow() - timedelta(hours=4)
+        await session.commit()
+    await asyncio.wait_for(responses_tick(runtime), 1)  # at once, though RESPONSES_WAIT_SEC is ten minutes
+    release.set()
+    await runtime.jobs.wait(JOB)
+    async with runtime.session_factory() as session:
+        assert (await session.execute(select(func.count(JobRun.id)).where(JobRun.job == JOB))).scalar() == 1
