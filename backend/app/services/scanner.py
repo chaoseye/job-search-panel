@@ -274,22 +274,28 @@ async def upsert_short(
 # ---- scanning one search ----------------------------------------------------
 
 
+async def search_path(session: AsyncSession, search: SavedSearch) -> str:
+    """The hh.ru method of a saved search: the vacancy search, or the vacancies similar to the primary resume
+    (RuntimeError when that one can not be asked). The scan and the refresh of the responses counter share it."""
+    if search.source != "similar_to_resume":
+        return "/vacancies"
+    caps = read_capabilities(await get_system_state(session))
+    if caps.get("resume_similar") == "unavailable":
+        raise RuntimeError("подходящие вакансии под резюме недоступны приложению (по данным зонда)")
+    resume = (
+        await session.execute(select(Resume).where(Resume.source == "hh", Resume.is_primary.is_(True)).limit(1))
+    ).scalar_one_or_none()
+    resume_id = (resume.hh_resume_id if resume else None) or await get_setting(session, "manual_resume_id")
+    if not resume_id:
+        raise RuntimeError("для источника «под резюме» нужен resume_id (Профиль)")
+    return f"/resumes/{resume_id}/similar_vacancies"
+
+
 async def scan_search(session: AsyncSession, client: HHClient, search: SavedSearch, ctx: ScanContext) -> dict[str, Any]:
     params = SearchParams.model_validate_json(search.params_json or "{}")
     stats: dict[str, Any] = {"search_id": search.id, "name": search.name, "requests": 0, "items": 0, "new": 0}
 
-    path = "/vacancies"
-    if search.source == "similar_to_resume":
-        caps = read_capabilities(await get_system_state(session))
-        if caps.get("resume_similar") == "unavailable":
-            raise RuntimeError("подходящие вакансии под резюме недоступны приложению (по данным зонда)")
-        resume = (
-            await session.execute(select(Resume).where(Resume.source == "hh", Resume.is_primary.is_(True)).limit(1))
-        ).scalar_one_or_none()
-        resume_id = (resume.hh_resume_id if resume else None) or await get_setting(session, "manual_resume_id")
-        if not resume_id:
-            raise RuntimeError("для источника «под резюме» нужен resume_id (Профиль)")
-        path = f"/resumes/{resume_id}/similar_vacancies"
+    path = await search_path(session, search)
 
     last_seen = as_utc(search.last_seen_published_at)
     window: dict[str, Any] = (

@@ -3,8 +3,9 @@
 import type { SavedSearch, SelectionProfile, VacancyDetail, VacancyRow } from '../api/types'
 import type { BadgeTone } from '../components/ui/Badge'
 import type { TrackStep } from '../components/ui/PipelineTrack'
+import { plural } from './format'
 import { currencySign, money } from './money'
-import { DEFAULT_FILTERS, GROUPS, type Filters } from './vacancyFilters'
+import { DEFAULT_FILTERS, FRESH_DAYS, GROUPS, type Filters } from './vacancyFilters'
 
 /** hh experience levels; the filter keeps any combination (a comma-separated list in the query and in saved filters). */
 export const EXPERIENCE_LEVELS: [string, string][] = [
@@ -70,6 +71,9 @@ export function formatsShort(v: Pick<VacancyRow, 'work_format_ids' | 'work_forma
   if (v.work_format_ids.length) return v.work_format_ids.map((id) => FORMAT_SHORT[id] ?? id.toLowerCase()).join(', ')
   return v.work_formats.map((f) => f.toLowerCase()).join(', ')
 }
+
+/** «Вакансия недоступна» in the response flow (the assistant's panel, the board): what the button does. */
+export const UNAVAILABLE_HINT = 'hh.ru пишет, что вакансия недоступна: отклик отменится, вакансия уйдёт в «Скрытые»'
 
 /** Marks that change how to apply. «Без зарплаты» is not one: the salary column already shows a dash. */
 export function rowFlags(flags: string[]): { key: string; label: string }[] {
@@ -186,13 +190,90 @@ export function pipelineOf(d: Pick<VacancyDetail, 'pipeline_status' | 'score' | 
 export interface FilterChip {
   key: string
   label: string
+  /** what the chip means in full (a tooltip) */
+  title?: string
   clear: (f: Filters) => Filters
 }
 
+const DAYS_AFTER_DO: [string, string, string] = ['дня', 'дней', 'дней'] // «до 1 дня», «до 3 дней», «до 5 дней»
+
+/** The days of the freshness filter in the saved filters; '' (off) gives the default for the switch's label. */
+export function freshDays(f: Pick<Filters, 'fresh_days'>): number {
+  return Number(f.fresh_days) || FRESH_DAYS
+}
+
+/** The switch and the chip of the freshness filter. City names are not declined («кроме Казани» would need the
+ *  genitive of any city the questionnaire may hold), so the label says «другие города» and the hint names them.
+ *  Without a city in the questionnaire every city is subject. `homeAreas` undefined — not loaded yet. */
+export function freshLabel(days: number, homeAreas?: string[]): string {
+  const span = `${days} ${plural(days, DAYS_AFTER_DO)}`
+  return homeAreas && homeAreas.length === 0 ? `Не старше ${span}` : `Другие города: до ${span}`
+}
+
+/** What the freshness filter never hides: the cities of the questionnaire and the vacancies with a response under way. */
+export function freshHint(homeAreas?: string[]): string {
+  if (!homeAreas) return 'Без срока: города из регионов анкеты и вакансии с откликом в работе.'
+  if (homeAreas.length === 0) return 'Без срока только вакансии с откликом в работе: в анкете не указаны регионы.'
+  return `Без срока: ${homeAreas.join(', ')} (регионы анкеты) и вакансии с откликом в работе.`
+}
+
+/** How many the freshness filter took out of the list: «69 старых скрыто», «1 старая скрыта», «3 старые скрыты». */
+export function staleText(n: number): string {
+  return `${n.toLocaleString('ru-RU')} ${plural(n, ['старая скрыта', 'старые скрыты', 'старых скрыто'])}`
+}
+
+const num = (n: number) => n.toLocaleString('ru-RU')
+
+/** The switch and the chip of the responses cap: «Откликов до 1 000» (at most so many). */
+export function responsesLabel(cap: number): string {
+  return `Откликов до ${num(cap)}`
+}
+
+/** What the responses cap hides and what it never hides: a vacancy without the counter of hh.ru (nothing to compare)
+ *  and one with a response under way. `cap` null — the field is empty, the filter is off. */
+export function responsesHint(cap: number | null): string {
+  const spared = 'Без счётчика откликов и с откликом в работе видны всегда.'
+  return cap === null ? `Пусто — без ограничения. ${spared}` : `Скрыты вакансии, где откликов на hh.ru больше ${num(cap)}. ${spared}`
+}
+
+/** How many the responses cap took out of the list: «9 скрыто по числу откликов», «1 скрыта…», «3 скрыты…». */
+export function cappedText(n: number): string {
+  return `${num(n)} ${plural(n, ['скрыта', 'скрыты', 'скрыто'])} по числу откликов`
+}
+
+/** The empty list when only the standing filters (freshness, the responses cap) emptied it. The cap counts only what
+ *  the freshness filter left (the list says the same), so the two numbers never overlap. */
+export function scopeEmpty(o: { stale: number; capped: number; days: number; cap: number | null; homeAreas?: string[] }): { title: string; text: string } {
+  const span = `${o.days} ${plural(o.days, DAYS_AFTER_DO)}` // «старше 1 дня», «старше 5 дней»
+  const what = o.homeAreas && o.homeAreas.length === 0 ? 'Вакансий' : 'Вакансий из других городов'
+  const capWords = `откликов больше ${num(o.cap ?? 0)}`
+  if (o.capped > 0 && o.stale > 0) {
+    return {
+      title: `Свежих вакансий с откликами до ${num(o.cap ?? 0)} нет`,
+      text: `${what} старше ${span}: ${num(o.stale)}; свежих, где ${capWords}: ${num(o.capped)}. Фильтры их скрывают.`,
+    }
+  }
+  if (o.capped > 0) return { title: `Вакансий с откликами до ${num(o.cap ?? 0)} нет`, text: `Вакансий, где ${capWords}: ${num(o.capped)}. Фильтр их скрывает.` }
+  return { title: 'Свежих вакансий нет', text: `${what} старше ${span}: ${num(o.stale)}. Фильтр их скрывает.` }
+}
+
 /** Everything that hides part of the list besides the tab and the text query (that one is in the search field):
- *  a chip each, so a filter saved last week can not empty the list unnoticed. */
-export function filterChips(f: Filters, searches?: SavedSearch[], sets?: SelectionProfile[]): FilterChip[] {
+ *  a chip each, so a filter saved last week can not empty the list unnoticed. The standing filters come first — the
+ *  freshness filter (on by default, its chip stays while it hides something) and the responses cap. */
+export function filterChips(f: Filters, searches?: SavedSearch[], sets?: SelectionProfile[], homeAreas?: string[]): FilterChip[] {
   const chips: FilterChip[] = []
+  if (f.fresh_days) {
+    chips.push({
+      key: 'fresh',
+      label: freshLabel(freshDays(f), homeAreas),
+      title: freshHint(homeAreas),
+      clear: (x) => ({ ...x, fresh_days: '' }),
+    })
+  }
+  if (f.max_responses) {
+    const cap = Number(f.max_responses)
+    chips.push({ key: 'responses', label: responsesLabel(cap), title: responsesHint(cap), clear: (x) => ({ ...x, max_responses: '' }) })
+  }
   if (f.search_id) {
     const name = searches?.find((s) => String(s.id) === f.search_id)?.name ?? `№${f.search_id}`
     chips.push({ key: 'search', label: `Поиск: ${name}`, clear: (x) => ({ ...x, search_id: '' }) })
@@ -221,7 +302,14 @@ export function filterChips(f: Filters, searches?: SavedSearch[], sets?: Selecti
   return chips
 }
 
-/** The filters back to the defaults, keeping the tab and the sort order (they never hide anything by surprise). */
+/** The filters back to the defaults, keeping the tab and the sort order (they never hide anything by surprise). The
+ *  freshness filter is a default: a reset turns it back on; the responses cap is off by default: a reset clears it. */
 export function clearFilters(f: Filters): Filters {
   return { ...DEFAULT_FILTERS, group: f.group, sort: f.sort }
+}
+
+/** Whether «Сбросить» would change anything: with the freshness filter on by default its chip alone is no reason. */
+export function canResetFilters(f: Filters): boolean {
+  const reset = clearFilters(f)
+  return (Object.keys(reset) as (keyof Filters)[]).some((k) => f[k] !== reset[k])
 }

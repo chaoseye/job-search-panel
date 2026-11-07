@@ -4,24 +4,32 @@ The scanner notices an archived vacancy only when a search returns it again — 
 search results, so a candidate that closed on hh.ru would stay in «Кандидаты» with a ready letter forever. Once a
 day the panel re-fetches the cards of candidates that no search has returned for `FRESHNESS_STALE_DAYS` days
 (application token, one request per second): archived or gone → `filtered_out` «закрыта на hh.ru»; still open →
-the responses counter and publish date are refreshed and `last_seen_at` is bumped, so the card is not re-checked
-for another `FRESHNESS_STALE_DAYS` days.
+the publish date is refreshed and `last_seen_at` is bumped, so the card is not re-checked for another
+`FRESHNESS_STALE_DAYS` days. The responses counter stays as the search results gave it: the full card of hh has no
+`counters` (the job `responses` refreshes it from the search results, services/responses_refresh.py).
+
+Then the responses nobody confirmed for the vacancies closed this way are cancelled (otherwise the open page of the
+assistant would stay in «Нужно действие» for weeks) — but only after `UNCONFIRMED_GRACE_DAYS`: a page opened in the
+evening may have been sent on hh.ru before the employer closed the vacancy that night, and «Да, отправлено» must still
+work in the morning.
 """
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.base import utcnow
-from app.db.models import Vacancy
+from app.db.models import Application, Vacancy
 from app.db.session import release_writes
 from app.hh.errors import HHAuthError, HHCaptchaRequired, HHError, HHNotFound
 from app.hh.vacancy import normalize_vacancy
 from app.services.audit import audit
+from app.services.vacancies import OPEN_RESPONSE_STATUSES, cancel_response
 
 log = structlog.get_logger("freshness")
 
@@ -29,6 +37,11 @@ log = structlog.get_logger("freshness")
 CHECK_STATUSES = ("new", "prescored", "evaluated", "suitable", "maybe", "letter_ready", "needs_manual")
 CLOSED_REASON = "закрыта на hh.ru (архив)"
 GONE_REASON = "закрыта на hh.ru (удалена)"
+# how long a response of a closed vacancy may wait for «Да, отправлено» before the check cancels it: a page opened on
+# Friday evening and confirmed on Monday morning keeps it
+UNCONFIRMED_GRACE_DAYS = 3
+# what «Отклики» shows: the panel does not know whether it went, only that nobody confirmed it
+UNCONFIRMED_ERROR = "отменён: вакансия закрыта на hh.ru, отправка не подтверждена"
 
 
 async def check_closed(runtime: Any, *, stale_days: int | None = None, limit: int = 500) -> dict[str, Any]:
@@ -36,7 +49,7 @@ async def check_closed(runtime: Any, *, stale_days: int | None = None, limit: in
     days = stale_days if stale_days is not None else settings.freshness_stale_days
     now = utcnow()
     since = now - timedelta(days=max(0, days))
-    summary: dict[str, Any] = {"checked": 0, "closed": 0, "refreshed": 0, "errors": 0}
+    summary: dict[str, Any] = {"checked": 0, "closed": 0, "refreshed": 0, "errors": 0, "responses_cancelled": 0}
     client = runtime.hh_client()
     async with runtime.session_factory() as session:
         rows = (
@@ -83,16 +96,52 @@ async def check_closed(runtime: Any, *, stale_days: int | None = None, limit: in
                 summary["closed"] += 1
                 await audit(session, "vacancies", f"Закрыта на hh.ru: «{row.name}»", vacancy_id=row.id)
                 continue
-            if data.responses_count is not None:
+            if data.responses_count is not None:  # not on real cards so far: the full card has no `counters`
                 row.responses_count = data.responses_count
             if data.published_at is not None:
                 row.published_at = data.published_at
             row.last_seen_at = now
             summary["refreshed"] += 1
+        await release_writes(session)
+        summary["responses_cancelled"] = await cancel_unconfirmed(session, now)
         await session.commit()
-    if summary["closed"]:
+    if summary["closed"] or summary["responses_cancelled"]:
         log.info("freshness_closed", **summary)
     return summary
+
+
+async def cancel_unconfirmed(session: AsyncSession, now: datetime) -> int:
+    """Cancels the responses of the vacancies closed on hh.ru (archived and `filtered_out`: this check or the scan
+    closed them, tonight or on an earlier night) that have waited for «Да, отправлено» longer than
+    UNCONFIRMED_GRACE_DAYS — the open page of the assistant and the API queue. A closed vacancy the user brought back
+    («Вернуть») is no longer `filtered_out` and keeps its response; one without `queued_at` (old rows) counts as long
+    waiting. Returns how many were cancelled."""
+    cutoff = now - timedelta(days=UNCONFIRMED_GRACE_DAYS)
+    rows = (
+        (
+            await session.execute(
+                select(Application)
+                .join(Vacancy, Vacancy.id == Application.vacancy_id)
+                .where(
+                    Application.status.in_(OPEN_RESPONSE_STATUSES),
+                    Vacancy.archived.is_(True),
+                    Vacancy.pipeline_status == "filtered_out",
+                    or_(Application.queued_at.is_(None), Application.queued_at < cutoff),
+                )
+                .order_by(Application.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for app_row in rows:
+        await cancel_response(
+            session,
+            app_row,
+            error_text=UNCONFIRMED_ERROR,
+            why="вакансия закрыта на hh.ru, отправку так и не подтвердили",
+        )
+    return len(rows)
 
 
 def _close(row: Vacancy, reason: str) -> None:

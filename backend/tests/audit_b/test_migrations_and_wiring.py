@@ -89,6 +89,7 @@ def test_scheduler_default_wiring() -> None:
         "sites_sync",
         "ws_tenders_sync",
         "freshness_daily",
+        "responses_refresh",
         "probe_tick",
     }
     assert expected <= ids, expected - ids
@@ -114,6 +115,7 @@ def test_scheduler_optional_jobs() -> None:
             ws_tenders_sync_min=0,
             probe_interval_days=0,
             freshness_stale_days=0,
+            responses_refresh_hours=0,
             imap_host="imap.example.com",
             imap_user="u",
             imap_password="p",
@@ -129,7 +131,10 @@ def test_scheduler_optional_jobs() -> None:
         "resume_bump_1300",
         "resume_bump_1715",
     } <= ids
-    assert not {"channel_sync", "sites_sync", "ws_tenders_sync", "probe_tick", "freshness_daily"} & ids
+    assert (
+        not {"channel_sync", "sites_sync", "ws_tenders_sync", "probe_tick", "freshness_daily", "responses_refresh"}
+        & ids
+    )
 
 
 def test_parse_hhmm_clamps_and_defaults() -> None:

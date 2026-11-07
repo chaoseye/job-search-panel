@@ -1,11 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Clock, ExternalLink, FilePenLine, PanelRightOpen } from 'lucide-react'
+import { Clock, ExternalLink, EyeOff, FilePenLine, PanelRightOpen } from 'lucide-react'
 import { useState } from 'react'
 import { apiGet, apiPut } from '../../api/client'
 import type { BoardColumnKey, BoardItem, VacancyDetail } from '../../api/types'
 import { ago, manualJournal, outcomeBadge, primaryAction, sendBlock, stageText } from '../../lib/board'
 import { formatDateTime } from '../../lib/format'
-import { formatsShort, salaryNet } from '../../lib/vacancyView'
+import { formatsShort, salaryNet, UNAVAILABLE_HINT } from '../../lib/vacancyView'
 import { Badge } from '../ui/Badge'
 import { Button, buttonClass } from '../ui/Button'
 import { Textarea } from '../ui/Field'
@@ -21,6 +21,8 @@ export interface RowActions {
   openCard: (item: BoardItem) => void
   reopen: (item: BoardItem) => void
   notSent: (item: BoardItem) => void
+  /** hh.ru does not show the vacancy any more: the response is cancelled, the vacancy hidden */
+  unavailable: (item: BoardItem) => void
   cancelQueued: (item: BoardItem) => void
   outcome: (item: BoardItem, state: 'invitation' | 'discard') => void
 }
@@ -125,6 +127,10 @@ function RowDetails({ colKey, item, mode, pending, actions }: { colKey: BoardCol
           <>
             <Button size="sm" disabled={pending} onClick={() => actions.notSent(item)}>
               Не отправил
+            </Button>
+            <Button size="sm" disabled={pending} onClick={() => actions.unavailable(item)} title={UNAVAILABLE_HINT}>
+              <EyeOff aria-hidden />
+              Вакансия недоступна
             </Button>
             <Button size="sm" variant="ghost" disabled={pending} onClick={() => actions.reopen(item)}>
               <ExternalLink aria-hidden />

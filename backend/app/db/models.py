@@ -260,7 +260,9 @@ class Vacancy(TimestampMixin, Base):
         Index("ix_vacancies_employer", "employer_id"),
         Index("ix_vacancies_published", "published_at"),
         # covering indexes (migration 0021): the tab lists (ids of a page), the counters and the statistics by
-        # first_seen_at never read the rows
+        # first_seen_at never read the rows; the city (0030) — for the freshness filter of the tabs
+        # (services/vacancies.Freshness.condition), on by default; the responses counter (0031) — for the responses
+        # cap (services/vacancies.responses_condition) and the sort «Меньше откликов»
         Index(
             "ix_vacancies_listing",
             "pipeline_status",
@@ -270,6 +272,8 @@ class Vacancy(TimestampMixin, Base):
             "score",
             "prescore",
             "published_at",
+            "area_name",
+            "responses_count",
         ),
         Index("ix_vacancies_first_seen", "first_seen_at", "rules_passed", "pipeline_status"),
     )

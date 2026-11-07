@@ -68,6 +68,22 @@ async def start_freshness(
     return {"job_run_id": run_id}
 
 
+@router.post("/responses")
+async def start_responses(
+    runtime: Annotated[Runtime, Depends(get_runtime)], session: Annotated[AsyncSession, Depends(get_session)]
+) -> dict[str, Any]:
+    """Refreshes the responses counter from the search results right now (the job `responses` of every few hours)."""
+    from app.services.responses_refresh import JOB, refresh_responses
+
+    if not auth_public_state(await get_hh_auth(session))["logged_in"]:
+        raise HTTPException(status_code=400, detail="Сначала войдите в hh.ru")
+    try:
+        run_id = await runtime.jobs.start(JOB, lambda: refresh_responses(runtime))
+    except JobBusy as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"job_run_id": run_id}
+
+
 @router.post("/sync")
 async def start_sync(
     runtime: Annotated[Runtime, Depends(get_runtime)],

@@ -1,15 +1,19 @@
 import { Clock } from 'lucide-react'
-import type { ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { HiddenEmployer, SavedSearch, SelectionProfile, VacancyRow } from '../api/types'
 import { formatDateTime, shortAgo, shortDate } from '../lib/format'
-import { GROUPS, type Filters } from '../lib/vacancyFilters'
+import { FRESH_DAYS, GROUPS, type Filters } from '../lib/vacancyFilters'
 import {
   ATTENTION_GROUPS,
   EXPERIENCE_LEVELS,
   experienceShort,
   formatsShort,
+  freshDays,
+  freshHint,
+  freshLabel,
   GROUP_LABEL,
   letterBadge,
+  responsesHint,
   rowFlags,
   salaryNet,
   salaryPublished,
@@ -34,6 +38,55 @@ import { Table, Td, Th } from './ui/Table'
 
 const SCORE_INPUT = /^(?:\d{0,2}|100)$/ // the API takes 0–100: a keystroke that leaves the range is not taken
 const DIGITS = /^\d*$/ // salary: no sign, no fraction (the API answers 422 to those)
+const CAP_INPUT = /^\d{0,6}$/ // the responses cap: 0–999 999, the API takes no more
+const CAP_DELAY = 400
+
+/** The responses cap of both views: digits only, without leading zeros (what loadFilters keeps). The number goes out
+ *  a moment after the typing stops: on the way to «1000» every keystroke would narrow the list to «до 1», «до 10» and
+ *  flash an empty list. Leaving the field, Enter or closing the popover sends it at once. */
+export function ResponsesCapInput({ value, onChange, className, ...rest }: { value: string; onChange: (cap: string) => void; className?: string; 'aria-label'?: string; id?: string }) {
+  const [text, setText] = useState(value)
+  useEffect(() => setText(value), [value])
+  const pending = useRef<string | null>(null)
+  const send = useRef(onChange)
+  send.current = onChange
+  const flush = () => {
+    if (pending.current === null) return
+    const next = pending.current
+    pending.current = null
+    send.current(next)
+  }
+  useEffect(() => {
+    if (text === value) {
+      pending.current = null
+      return
+    }
+    pending.current = text
+    const t = window.setTimeout(flush, CAP_DELAY)
+    return () => window.clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [text])
+  // the popover unmounts the field: what was typed must not be lost with it
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => flush, [])
+  return (
+    <Input
+      {...rest}
+      inputMode="numeric"
+      autoComplete="off"
+      placeholder="1000"
+      className={className}
+      value={text}
+      onChange={(e) => {
+        // a pasted «10 000» (spaces, no-break spaces of ru-RU) is the number 10000; seven digits are not taken
+        const v = e.target.value.replace(/\s/g, '')
+        if (CAP_INPUT.test(v)) setText(v.replace(/^0+(?=\d)/, ''))
+      }}
+      onBlur={flush}
+      onKeyDown={(e) => e.key === 'Enter' && flush()}
+    />
+  )
+}
 
 /** Every group of the list with its count, one of them chosen: a radio group like Segmented, but the buttons wrap
  *  over as many lines as they need. A queue that waits for the user has an accent count. */
@@ -82,7 +135,7 @@ export function GroupButtons({ value, onChange, count }: { value: string; onChan
 }
 
 /** The groups and every filter, open in one panel. «Сбросить фильтры» keeps the group and the sort order, as the chips
- *  of the compact view do. */
+ *  of the compact view do, turns the freshness filter back on and clears the responses cap (the defaults). */
 export function ClassicFilters({
   filters,
   set,
@@ -94,6 +147,7 @@ export function ClassicFilters({
   sets,
   snoozed,
   summary,
+  homeAreas,
 }: {
   filters: Filters
   set: (patch: Partial<Filters>) => void
@@ -105,6 +159,8 @@ export function ClassicFilters({
   sets: SelectionProfile[]
   snoozed: number
   summary?: ReactNode
+  /** the cities the freshness filter spares (undefined — not loaded yet) */
+  homeAreas?: string[]
 }) {
   const chosen = filters.experience.split(',').filter(Boolean)
   return (
@@ -195,6 +251,19 @@ export function ClassicFilters({
           </Select>
         </Field>
         <div className="flex flex-wrap items-center gap-x-5 gap-y-2 md:col-span-3 xl:col-span-6">
+          {/* the standing filters side by side; the hint names the spared cities: the label can not decline them
+              («кроме Казани») */}
+          <span title={freshHint(homeAreas)} className="contents">
+            <Checkbox
+              label={freshLabel(freshDays(filters), homeAreas)}
+              checked={Boolean(filters.fresh_days)}
+              onChange={(e) => set({ fresh_days: e.target.checked ? String(FRESH_DAYS) : '' })}
+            />
+          </span>
+          <label className="flex items-center gap-2 text-sm text-ink" title={responsesHint(filters.max_responses ? Number(filters.max_responses) : null)}>
+            Откликов до
+            <ResponsesCapInput value={filters.max_responses} onChange={(cap) => set({ max_responses: cap })} className="w-24" />
+          </label>
           <Checkbox label="Только новые" checked={filters.unseen_only} onChange={(e) => set({ unseen_only: e.target.checked })} />
           <Checkbox label={`Показывать отложенные${snoozed ? ` (${snoozed})` : ''}`} checked={filters.include_snoozed} onChange={(e) => set({ include_snoozed: e.target.checked })} />
           <Button variant="ghost" size="sm" onClick={onReset} disabled={!canReset}>

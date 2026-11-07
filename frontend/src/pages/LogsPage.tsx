@@ -22,6 +22,7 @@ const RUN_NOW: { id: string; label: string; path: string }[] = [
   { id: 'apply', label: 'Отправить очередь', path: '/api/applications/run' },
   { id: 'sync', label: 'Синхронизировать отклики', path: '/api/jobs/sync' },
   { id: 'freshness', label: 'Проверить закрытые', path: '/api/jobs/freshness' },
+  { id: 'responses', label: 'Обновить число откликов', path: '/api/jobs/responses' },
 ]
 
 const LEVEL_TONE: Record<string, BadgeTone> = { error: 'bad', warning: 'warn', info: 'neutral' }

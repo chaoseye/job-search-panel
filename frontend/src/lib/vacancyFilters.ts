@@ -33,7 +33,17 @@ export interface Filters {
   include_snoozed: boolean
   unseen_only: boolean
   sort: string
+  /** The freshness filter: outside the cities of the questionnaire only vacancies published within so many days;
+   *  '' — off. On by default, so a browser with filters saved before it gets it too. */
+  fresh_days: string
+  /** The responses cap: only vacancies with at most so many responses on hh.ru; '' — off, the default (the user sets
+   *  the number). */
+  max_responses: string
 }
+
+/** The days of the freshness filter: a vacancy outside the cities of the questionnaire stays on the list so long after
+ *  its publication on hh.ru. */
+export const FRESH_DAYS = 5
 
 export const DEFAULT_FILTERS: Filters = {
   group: 'candidates',
@@ -48,6 +58,8 @@ export const DEFAULT_FILTERS: Filters = {
   include_snoozed: false,
   unseen_only: false,
   sort: 'score',
+  fresh_days: String(FRESH_DAYS),
+  max_responses: '',
 }
 
 export const FILTERS_KEY = 'vacancies.filters'
@@ -76,7 +88,25 @@ export function savedFilterOk(key: string, value: unknown): boolean {
   if (key === 'sort') return SORTS.includes(value as string)
   if (key === 'group') return isGroup(value)
   if (NUMERIC_FILTERS.includes(key)) return /^\d*$/.test(value as string)
+  // 1–365 days or '' (off): «0» would be a 422 from the list
+  if (key === 'fresh_days') return /^(?:|[1-9]\d{0,2})$/.test(value as string) && Number(value || 0) <= 365
+  // 0–999 999 responses or '' (off), as the field types it (no leading zeros): the API takes no more
+  if (key === 'max_responses') return /^(?:|0|[1-9]\d{0,5})$/.test(value as string)
   return true
+}
+
+/** The standing filters of the list (freshness, responses cap) as a query: the list asks with them and so does the
+ *  menu counter, so its number of new vacancies is the one the page shows. */
+export function scopeQuery(f: Pick<Filters, 'fresh_days' | 'max_responses'>): string {
+  const params = new URLSearchParams()
+  if (f.fresh_days) params.set('fresh_days', f.fresh_days)
+  if (f.max_responses) params.set('max_responses', f.max_responses)
+  return params.toString()
+}
+
+/** `scopeQuery` of the saved filters (the menu reads them at every fetch). */
+export function savedScopeQuery(storage: Pick<Storage, 'getItem'> = localStorage): string {
+  return scopeQuery(loadFilters(storage))
 }
 
 /** The saved filters: only known keys with a value the API accepts — a stale or hand-edited entry ({"q": null},

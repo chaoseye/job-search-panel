@@ -21,6 +21,25 @@ from app.services.state import auth_public_state, get_hh_auth
 
 router = APIRouter(prefix="/vacancies", tags=["vacancies"])
 
+FreshDays = Annotated[
+    int | None,
+    Query(
+        ge=1,
+        le=svc.FRESH_DAYS_MAX,
+        description="фильтр свежести: вне городов анкеты только опубликованные за столько дней "
+        "(отклики в работе видны всегда)",
+    ),
+]
+MaxResponses = Annotated[
+    int | None,
+    Query(
+        ge=0,
+        le=svc.RESPONSES_CAP_MAX,
+        description="только вакансии, где откликов на hh.ru не больше стольких (без счётчика и отклики в работе "
+        "видны всегда)",
+    ),
+]
+
 
 async def _get(session: AsyncSession, vacancy_id: int) -> Vacancy:
     row = await session.get(Vacancy, vacancy_id)
@@ -46,6 +65,8 @@ async def list_vacancies(
     per_page: int = Query(50, ge=1, le=200),
     selection_profile_id: int | None = Query(None, ge=0, description="0 = базовая анкета"),
     experience: str | None = Query(None, description="hh experience ids через запятую: noExperience,between1And3"),
+    fresh_days: FreshDays = None,
+    max_responses: MaxResponses = None,
 ) -> dict[str, Any]:
     if group not in svc.GROUPS:
         raise HTTPException(status_code=400, detail=f"Неизвестная группа: {group}")
@@ -68,12 +89,20 @@ async def list_vacancies(
         per_page=per_page,
         selection_profile_id=selection_profile_id,
         experience=experience_ids or None,
+        fresh_days=fresh_days,
+        max_responses=max_responses,
     )
 
 
 @router.get("/summary")
-async def summary(session: Annotated[AsyncSession, Depends(get_session)]) -> dict[str, Any]:
-    return await svc.status_counts(session)
+async def summary(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    fresh_days: FreshDays = None,
+    max_responses: MaxResponses = None,
+) -> dict[str, Any]:
+    """Counters of the tabs and the menu; the menu passes the page's standing filters (freshness, responses cap) so
+    its number matches the list."""
+    return await svc.status_counts(session, fresh=await svc.freshness(session, fresh_days), max_responses=max_responses)
 
 
 @router.get("/hidden-employers")
@@ -153,6 +182,20 @@ async def hide(vacancy_id: int, session: Annotated[AsyncSession, Depends(get_ses
     await svc.hide(session, row)
     await session.commit()
     return await svc.vacancy_detail(session, row)
+
+
+@router.post("/{vacancy_id}/unavailable")
+async def unavailable(vacancy_id: int, session: Annotated[AsyncSession, Depends(get_session)]) -> dict[str, Any]:
+    """«Вакансия недоступна»: hh.ru does not show it any more — the unsent response is cancelled, the vacancy hidden."""
+    row = await _get(session, vacancy_id)
+    try:
+        cancelled = await svc.mark_unavailable(session, row)
+    except svc.VacancyActionError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+    await session.commit()
+    data = await svc.vacancy_detail(session, row)
+    data["cancelled_responses"] = cancelled
+    return data
 
 
 @router.post("/{vacancy_id}/hide-employer")

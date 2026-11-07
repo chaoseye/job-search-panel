@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 import { goToLogin } from '../api/login'
+import VacanciesPage from '../pages/VacanciesPage'
 import { stubApi, Where } from '../test/render'
 import AppShell from './AppShell'
 
@@ -53,6 +54,49 @@ describe('AppShell', () => {
     expect(await screen.findByText('Режим «Ассистент»')).toBeInTheDocument()
     expect(await screen.findByText(/Откликов сегодня:/)).toHaveTextContent('Откликов сегодня: 3 из 20')
     expect(await screen.findByText(/Пауза включена вручную\./)).toBeInTheDocument()
+  })
+
+  it('counts the new vacancies with the standing filters the «Вакансии» page keeps', async () => {
+    const api = stubApi(API)
+    const { unmount } = renderShell('/')
+    await waitFor(() => expect(api.calls).toContain('/api/vacancies/summary?fresh_days=5')) // on by default
+    unmount()
+
+    localStorage.setItem('vacancies.filters', JSON.stringify({ fresh_days: '' })) // turned off on the page
+    const off = stubApi(API)
+    const second = renderShell('/')
+    await waitFor(() => expect(off.calls).toContain('/api/vacancies/summary'))
+    expect(off.calls.some((c) => c.includes('fresh_days'))).toBe(false)
+    second.unmount()
+
+    localStorage.setItem('vacancies.filters', JSON.stringify({ max_responses: '1000' })) // the responses cap too
+    const capped = stubApi(API)
+    renderShell('/')
+    await waitFor(() => expect(capped.calls).toContain('/api/vacancies/summary?fresh_days=5&max_responses=1000'))
+  })
+
+  it('refreshes that count when the «Вакансии» page sets a standing filter', async () => {
+    const api = stubApi({
+      ...API,
+      '/api/vacancies/hidden-employers': [],
+      '/api/vacancies': { items: [], total: 0, page: 0, per_page: 50, counts: { candidates: 0, total: 0, unseen_candidates: 0, new: 0, snoozed: 0 } },
+    })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={['/vacancies']}>
+          <Routes>
+            <Route element={<AppShell />}>
+              <Route path="/vacancies" element={<VacanciesPage />} />
+            </Route>
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    await waitFor(() => expect(api.calls).toContain('/api/vacancies/summary?fresh_days=5'))
+    fireEvent.click(await screen.findByRole('button', { name: /^Фильтры/ }))
+    fireEvent.change(await screen.findByLabelText('Откликов до'), { target: { value: '1000' } })
+    await waitFor(() => expect(api.calls).toContain('/api/vacancies/summary?fresh_days=5&max_responses=1000'))
   })
 
   it('opens the menu on a phone and closes it on a tap, also on the page already open', async () => {

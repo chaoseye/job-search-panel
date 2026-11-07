@@ -25,6 +25,7 @@ import { goToLogin } from '../api/login'
 import { useSessionInfo } from '../api/session'
 import type { ApplyStatus, AuthStatus, BatchesSummary, ChannelsSummary, SettingsView, SitesSummary, StudiosSummary, SyncStatus, TendersSummary, VacancyCounts } from '../api/types'
 import { clockTime, relativeTime } from '../lib/format'
+import { savedScopeQuery } from '../lib/vacancyFilters'
 import { Count } from './ui/Badge'
 import { Button } from './ui/Button'
 import { cx } from './ui/cx'
@@ -82,9 +83,17 @@ export const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
 /** Queues where the count means «something waits for you» (accent); the others are plain «new» counts. */
 const ATTENTION: BadgeKey[] = ['vacancies', 'applications', 'batches']
 
+/** The new vacancies of the menu are counted with the standing filters the «Вакансии» page keeps — freshness and the
+ *  responses cap (read at every fetch: the page refreshes this query when one is switched), so the menu does not count
+ *  what the page hides. */
+function vacancySummaryUrl(): string {
+  const query = savedScopeQuery()
+  return query ? `/api/vacancies/summary?${query}` : '/api/vacancies/summary'
+}
+
 function useBadges(): Partial<Record<BadgeKey, number>> {
   const every = (ms: number) => ({ refetchInterval: ms })
-  const vacancies = useQuery({ queryKey: ['vacancy-summary'], queryFn: () => apiGet<VacancyCounts>('/api/vacancies/summary'), ...every(30000) })
+  const vacancies = useQuery({ queryKey: ['vacancy-summary'], queryFn: () => apiGet<VacancyCounts>(vacancySummaryUrl()), ...every(30000) })
   const batches = useQuery({ queryKey: ['batches-summary'], queryFn: () => apiGet<BatchesSummary>('/api/batches/summary'), ...every(30000) })
   const sync = useQuery({ queryKey: ['sync-status'], queryFn: () => apiGet<SyncStatus>('/api/negotiations/status'), ...every(30000) })
   const channels = useQuery({ queryKey: ['channels-summary'], queryFn: () => apiGet<ChannelsSummary>('/api/channels/summary'), ...every(30000) })

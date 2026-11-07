@@ -52,6 +52,8 @@ _NON_NEGATIVE = (
     "hot_max_age_days",
     "hot_min_score",
     "freshness_stale_days",
+    "responses_refresh_hours",
+    "responses_refresh_days",
     "imap_port",
     "imap_sync_min",
     "imap_since_days",
@@ -122,7 +124,7 @@ class Settings(BaseSettings):
 
     # exchange with Claude Code (M3)
     batch_size: int = 12
-    batch_desc_max_chars: int = 4000
+    batch_desc_max_chars: int = 8000
     batch_auto_create: bool = True
     claude_cli_autorun: bool = False
     # background run of `claude -p /hh-batch` whenever packets wait in pending/ (0 = only by the button)
@@ -194,6 +196,11 @@ class Settings(BaseSettings):
     # (archived / gone → «закрыта на hh.ru»); 0 days = off
     freshness_check_at: str = "04:10"
     freshness_stale_days: int = 2
+    # the responses counter of the known vacancies from the results of the enabled searches for the last N days:
+    # hh.ru gives it only in search results, the scan sees a vacancy only when it is published or raised; every
+    # RESPONSES_REFRESH_HOURS hours, 0 = off (the responses cap of «Вакансии» then judges by the number of the find)
+    responses_refresh_hours: int = 3
+    responses_refresh_days: int = 5
     # hh.ru notification e-mails → the manual journal (IMAP, read-only; an app password, only here in .env).
     # Empty host/user/password = off. IMAP_FROM filters the sender, IMAP_SINCE_DAYS bounds the first run
     imap_host: str = ""

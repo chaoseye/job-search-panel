@@ -4,7 +4,7 @@ import { apiGet, apiPost } from '../../api/client'
 import type { ApplicationRow, ApplyStatus, BoardBand, BoardColumnKey, BoardColumnList, BoardItem, BoardView, QueueResult, VacancyDetail } from '../../api/types'
 import { BANDS, bandChips, bandLabel, COLUMN_KEYS, defaultBand, emptyText, keyHint, outcomeBadge, primaryAction, sendBlock, stageText } from '../../lib/board'
 import { countOf } from '../../lib/format'
-import AssistPanel from '../AssistPanel'
+import AssistPanel, { type AssistResult } from '../AssistPanel'
 import ConsentModal from '../ConsentModal'
 import NegotiationDrawer from '../NegotiationDrawer'
 import VacancyDrawer from '../VacancyDrawer'
@@ -23,7 +23,7 @@ import WorkView from './WorkView'
 
 const SNOOZE_DAYS = 3
 
-type Kind = 'skip' | 'snooze' | 'open' | 'queue' | 'confirm' | 'notSent' | 'cancel' | 'viewed' | 'invitation' | 'discard'
+type Kind = 'skip' | 'snooze' | 'open' | 'queue' | 'confirm' | 'notSent' | 'unavailable' | 'cancel' | 'viewed' | 'invitation' | 'discard'
 
 // where a card goes after the action (the narrow column it lands in glows for a moment); null — it leaves the board
 const DESTINATION: Record<Kind, BoardColumnKey | null> = {
@@ -33,6 +33,7 @@ const DESTINATION: Record<Kind, BoardColumnKey | null> = {
   queue: 'confirm',
   confirm: 'sent',
   notSent: 'new',
+  unavailable: null,
   cancel: 'new',
   viewed: 'viewed',
   invitation: 'answer',
@@ -46,11 +47,15 @@ const DONE: Record<Kind, string> = {
   queue: 'Отклик в очереди на отправку',
   confirm: 'Отклик отмечен отправленным',
   notSent: 'Вакансия вернулась в «Новые»',
+  unavailable: 'Вакансия недоступна: отклик отменён, вакансия в «Скрытых»',
   cancel: 'Отклик отменён',
   viewed: 'Записано: работодатель смотрел',
   invitation: 'Записано приглашение',
   discard: 'Записан отказ',
 }
+
+// the end of the assistant's panel opened from the board, as the action it equals
+const ASSIST_KIND: Record<AssistResult, Kind> = { sent: 'confirm', not_sent: 'notSent', unavailable: 'unavailable' }
 
 const itemKey = (item: BoardItem) => item.vacancy.id
 
@@ -120,6 +125,8 @@ export default function VacancyBoard() {
         case 'confirm':
         case 'notSent':
           return apiPost(`/api/applications/${aid}/confirm`, { sent: kind === 'confirm' })
+        case 'unavailable':
+          return apiPost(`/api/vacancies/${vid}/unavailable`, {})
         case 'cancel':
           return apiPost(`/api/applications/${aid}/cancel`, {})
         case 'viewed':
@@ -171,6 +178,7 @@ export default function VacancyBoard() {
     openCard: (item) => (item.application && (col === 'sent' || col === 'viewed' || col === 'answer') ? setApplicationCard(item.application) : setVacancyCard(item.vacancy.id)),
     reopen: (item) => item.application && setAssist({ ...item.application, apply_url: item.vacancy.apply_alternate_url ?? item.vacancy.alternate_url }),
     notSent: (item) => act.mutate({ kind: 'notSent', item }),
+    unavailable: (item) => act.mutate({ kind: 'unavailable', item }),
     cancelQueued: (item) => act.mutate({ kind: 'cancel', item }),
     outcome: (item, state) => act.mutate({ kind: state, item }),
   }
@@ -239,10 +247,10 @@ export default function VacancyBoard() {
       {assist && (
         <AssistPanel
           application={assist}
-          onDone={(sent) => {
+          onDone={(result) => {
             setAssist(null)
-            nav.setArrived(sent ? 'sent' : 'new')
-            nav.say(sent ? DONE.confirm : DONE.notSent)
+            nav.setArrived(DESTINATION[ASSIST_KIND[result]])
+            nav.say(DONE[ASSIST_KIND[result]])
             refresh()
           }}
         />

@@ -2,10 +2,10 @@ import { X } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { cx } from './cx'
 
-/** An active filter: what hides part of the list, removable with its cross. */
-export function Chip({ children, onRemove, removeLabel }: { children: ReactNode; onRemove: () => void; removeLabel: string }) {
+/** An active filter: what hides part of the list, removable with its cross; `title` — what it means in full. */
+export function Chip({ children, onRemove, removeLabel, title }: { children: ReactNode; onRemove: () => void; removeLabel: string; title?: string }) {
   return (
-    <span className="inline-flex h-7 max-w-full items-center gap-0.5 rounded-full bg-sunken pl-2.5 pr-0.5 text-caption text-ink">
+    <span title={title} className="inline-flex h-7 max-w-full items-center gap-0.5 rounded-full bg-sunken pl-2.5 pr-0.5 text-caption text-ink">
       <span className="truncate">{children}</span>
       <button
         type="button"

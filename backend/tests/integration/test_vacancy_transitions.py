@@ -1,6 +1,6 @@
-"""The user's actions on a vacancy from every pipeline status: the table below is the rule
-book of «Пропустить», «Скрыть», «Вернуть в кандидаты», «В пакет для Claude» and «Переоценить». hh.ru answers 503 to everything: no action may need it (reprocess works on the
-stored card)."""
+"""The user's actions on a vacancy from every pipeline status: the table below is the rule book of «Пропустить»,
+«Скрыть», «Вернуть в кандидаты», «В пакет для Claude», «Переоценить» and «Вакансия недоступна». hh.ru answers 503
+to everything: no action may need it (reprocess works on the stored card)."""
 
 from __future__ import annotations
 
@@ -136,7 +136,7 @@ def _post(client: httpx.AsyncClient, vid: int, action: str) -> Any:
     return client.post(f"/api/vacancies/{vid}/{action}")
 
 
-@pytest.mark.parametrize("action", ["skip", "hide", "restore", "to-batch", "reprocess"])
+@pytest.mark.parametrize("action", ["skip", "hide", "restore", "to-batch", "reprocess", "unavailable"])
 @respx.mock(assert_all_called=False)
 async def test_actions_from_every_status(api, respx_mock: respx.MockRouter, action: str) -> None:
     respx_mock.route().mock(return_value=httpx.Response(503, json={"errors": [{"type": "service_unavailable"}]}))
@@ -153,6 +153,8 @@ async def test_actions_from_every_status(api, respx_mock: respx.MockRouter, acti
             expected_code = 409
         if action == "to-batch" and (key in WITH_RESPONSE or key == "already_applied"):
             expected_code = 409
+        if action == "unavailable" and key in ("sent", "already_applied"):  # the response is out: nothing to hide
+            expected_code = 409
         if r.status_code != expected_code:
             problems.append(f"{action} {key}: HTTP {r.status_code} (ждали {expected_code}) {r.text[:150]}")
             continue
@@ -162,7 +164,7 @@ async def test_actions_from_every_status(api, respx_mock: respx.MockRouter, acti
             continue
         if action == "skip":
             ok = after == "skipped" and ("queued" not in apps)
-        elif action == "hide":
+        elif action in ("hide", "unavailable"):
             ok = after == "hidden" and hidden and ("queued" not in apps)
         elif action == "restore":
             ok = after == RESTORED[key] and not hidden
@@ -172,11 +174,15 @@ async def test_actions_from_every_status(api, respx_mock: respx.MockRouter, acti
             ok = after == before if key in KEPT_ON_REPROCESS else after not in ("sent", "queued", "already_applied")
         if not ok:
             problems.append(f"{action} {key}: {before} → {after} (hidden={hidden}, отклики {apps})")
-        # a response that was sent or is waiting for the user is never cancelled by a vacancy action
-        if key in ("sent", "assist_open") and apps != [CASES[key][3][1]]:  # type: ignore[index]
+        # a response that was sent or is waiting for the user is never cancelled by a vacancy action — except
+        # «Вакансия недоступна» for the open page of the assistant: hh.ru would not take the response
+        unavailable_page = action == "unavailable" and key == "assist_open"
+        if key in ("sent", "assist_open") and not unavailable_page and apps != [CASES[key][3][1]]:  # type: ignore[index]
             problems.append(f"{action} {key}: отклик изменился: {apps}")
-        if key == "queued" and action in ("skip", "hide") and apps != ["cancelled"]:
+        if key == "queued" and action in ("skip", "hide", "unavailable") and apps != ["cancelled"]:
             problems.append(f"{action} {key}: отклик в очереди не отменён: {apps}")
+        if unavailable_page and apps != ["cancelled"]:
+            problems.append(f"{action} {key}: открытая страница отклика не отменена: {apps}")
     assert problems == [], "\n".join(problems)
 
 

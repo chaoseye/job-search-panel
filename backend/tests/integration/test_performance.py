@@ -32,6 +32,7 @@ from app.runtime import Runtime
 from app.services import analytics as an
 from app.services import stats as st
 from app.services import vacancies as vs
+from app.services.preferences import Preferences, save_preferences
 from app.services.state import get_system_state
 
 LARGE = ["description_html", "description_text", "raw_short_json", "raw_full_json"]
@@ -78,6 +79,11 @@ async def test_large_columns_are_last_and_indexes_exist(runtime: Runtime) -> Non
     con.close()
     assert cols[-4:] == LARGE, cols[-8:]
     assert {"ix_vacancies_listing", "ix_vacancies_first_seen"} <= indexes
+    con = sqlite3.connect(db)
+    listing = [r[2] for r in con.execute("pragma index_info(ix_vacancies_listing)")]
+    con.close()
+    # 0030: the freshness filter of the tabs; 0031: the responses cap
+    assert listing[-3:] == ["published_at", "area_name", "responses_count"], listing
 
 
 def test_layout_migration_keeps_every_value(tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -146,6 +152,28 @@ async def test_hot_queries_run_from_covering_indexes(runtime: Runtime) -> None:
     candidates = await _plans(runtime, lambda s: vs.list_vacancies(s, group="candidates"))
     page = [p for s, p in candidates if s.startswith("SELECT vacancies.id FROM vacancies") and "LIMIT" in s]
     assert page and "COVERING INDEX ix_vacancies_listing" in page[0], candidates
+
+    # the freshness filter is on by default in the page and the menu: the page, its counts and the tab counters stay
+    # on the index too (the city is in it since 0030)
+    async with runtime.session_factory() as session:
+        await save_preferences(session, Preferences(areas=["Казань"]))
+        await session.commit()
+    fresh = await _plans(runtime, lambda s: vs.list_vacancies(s, group="candidates", fresh_days=5))
+    page = [p for s, p in fresh if s.startswith("SELECT vacancies.id FROM vacancies") and "LIMIT" in s]
+    assert page and "COVERING INDEX ix_vacancies_listing" in page[0], fresh
+    totals = [p for s, p in fresh if s.startswith("SELECT count(vacancies.id) AS count_1 FROM vacancies WHERE")]
+    assert len(totals) >= 2 and all("COVERING INDEX ix_vacancies_listing" in p for p in totals), fresh
+    grouped = [p for s, p in fresh if "GROUP BY vacancies.pipeline_status" in s]
+    assert grouped and "COVERING INDEX ix_vacancies_listing" in grouped[0], fresh
+
+    # with the responses cap too (the user sets it): the page, its three counts and the tab counters
+    capped = await _plans(runtime, lambda s: vs.list_vacancies(s, group="candidates", fresh_days=5, max_responses=1000))
+    page = [p for s, p in capped if s.startswith("SELECT vacancies.id FROM vacancies") and "LIMIT" in s]
+    assert page and "COVERING INDEX ix_vacancies_listing" in page[0], capped
+    totals = [p for s, p in capped if s.startswith("SELECT count(vacancies.id) AS count_1 FROM vacancies WHERE")]
+    assert len(totals) >= 3 and all("COVERING INDEX ix_vacancies_listing" in p for p in totals), capped
+    grouped = [p for s, p in capped if "GROUP BY vacancies.pipeline_status" in s]
+    assert grouped and "COVERING INDEX ix_vacancies_listing" in grouped[0], capped
 
     statistics = await _plans(
         runtime, lambda s: st.compute_stats(s, runtime.settings, period_key="30d", use_cache=False)

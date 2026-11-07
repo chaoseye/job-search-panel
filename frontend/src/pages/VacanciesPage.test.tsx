@@ -30,6 +30,7 @@ function counts(over: Partial<VacancyCounts> = {}): VacancyCounts {
 }
 
 const EMPTY_LIST = { items: [], total: 0, page: 0, per_page: 50, counts: counts() }
+const FRESH = { days: 5, home_areas: ['Казань'], hidden: 0 }
 
 function row(id: number, name: string): VacancyRow {
   return {
@@ -130,6 +131,118 @@ describe('VacanciesPage', () => {
     expect(JSON.parse(localStorage.getItem(FILTERS_KEY) ?? '{}').min_score).toBe('')
   })
 
+  it('hides the old vacancies of other cities by default and says how many', async () => {
+    const api = stubApi({
+      '/api/vacancies/hidden-employers': [],
+      '/api/vacancies': { ...EMPTY_LIST, items: [row(5, 'Первая вакансия')], total: 1, counts: counts({ candidates: 1, total: 9 }), fresh: { ...FRESH, hidden: 69 } },
+    })
+    renderAt('/vacancies', '/vacancies', <VacanciesPage />)
+    await waitFor(() => expect(listRequests(api.calls).length).toBeGreaterThan(0))
+    expect(listRequests(api.calls)[0].get('fresh_days')).toBe('5')
+    const chip = await screen.findByText('Другие города: до 5 дней')
+    expect(chip.closest('[title]')).toHaveAttribute('title', 'Без срока: Казань (регионы анкеты) и вакансии с откликом в работе.')
+    expect(await screen.findByText('1 вакансия · 69 старых скрыто')).toBeInTheDocument()
+    // a default is nothing to reset
+    expect(screen.queryByRole('button', { name: 'Сбросить все' })).toBeNull()
+
+    // the cross turns it off and the browser keeps it off
+    fireEvent.click(screen.getByRole('button', { name: 'Убрать фильтр «Другие города: до 5 дней»' }))
+    await waitFor(() => expect(listRequests(api.calls).at(-1)!.has('fresh_days')).toBe(false))
+    expect(JSON.parse(localStorage.getItem(FILTERS_KEY) ?? '{}').fresh_days).toBe('')
+    expect(screen.queryByText('Другие города: до 5 дней')).toBeNull()
+
+    // the filters popover turns it back on and names the spared city
+    fireEvent.click(screen.getByRole('button', { name: /^Фильтры/ }))
+    const box = await screen.findByRole('checkbox', { name: 'Другие города: до 5 дней' })
+    expect(box).not.toBeChecked()
+    expect(screen.getByText('Без срока: Казань (регионы анкеты) и вакансии с откликом в работе.')).toBeInTheDocument()
+    fireEvent.click(box)
+    await waitFor(() => expect(listRequests(api.calls).at(-1)!.get('fresh_days')).toBe('5'))
+  })
+
+  it('offers the old vacancies when the filter alone emptied the group', async () => {
+    const api = stubApi({ '/api/vacancies/hidden-employers': [], '/api/vacancies': { ...EMPTY_LIST, fresh: { ...FRESH, hidden: 3 } } })
+    renderAt('/vacancies', '/vacancies', <VacanciesPage />)
+    expect(await screen.findByText('Свежих вакансий нет')).toBeInTheDocument()
+    expect(screen.getByText('Вакансий из других городов старше 5 дней: 3. Фильтр их скрывает.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Показать старые' }))
+    await waitFor(() => expect(listRequests(api.calls).at(-1)!.has('fresh_days')).toBe(false))
+  })
+
+  it('caps the responses from the filters popover, waits for the whole number and says how many it hid', async () => {
+    const api = stubApi({
+      '/api/vacancies/hidden-employers': [],
+      '/api/vacancies': { ...EMPTY_LIST, items: [row(5, 'Первая вакансия')], total: 1, counts: counts({ candidates: 1, total: 9 }), fresh: FRESH, responses: { max: 1000, hidden: 9 } },
+    })
+    renderAt('/vacancies', '/vacancies', <VacanciesPage />)
+    await waitFor(() => expect(listRequests(api.calls).length).toBeGreaterThan(0))
+    expect(listRequests(api.calls)[0].has('max_responses')).toBe(false) // off by default
+
+    fireEvent.click(screen.getByRole('button', { name: /^Фильтры/ }))
+    const field = await screen.findByLabelText('Откликов до')
+    expect(screen.getByText('Пусто — без ограничения. Без счётчика откликов и с откликом в работе видны всегда.')).toBeInTheDocument()
+    // typed key by key: the list waits for the whole number, «до 1» and «до 10» never go out
+    for (const value of ['1', '10', '100', '1000']) fireEvent.change(field, { target: { value } })
+    await waitFor(() => expect(listRequests(api.calls).at(-1)!.get('max_responses')).toBe('1000'))
+    expect(listRequests(api.calls).every((p) => [null, '1000'].includes(p.get('max_responses')))).toBe(true)
+    expect(JSON.parse(localStorage.getItem(FILTERS_KEY) ?? '{}').max_responses).toBe('1000')
+    // a sign or a fraction is not taken (the API would answer 422); a pasted «1 500» is the number 1500
+    fireEvent.change(field, { target: { value: '-5' } })
+    expect(field).toHaveValue('1000')
+    fireEvent.change(field, { target: { value: '1 500' } })
+    expect(field).toHaveValue('1500')
+    expect(listRequests(api.calls).some((p) => p.get('max_responses') === '1500')).toBe(false) // the typing may go on
+    // leaving the field (a click on «Готово» right away) sends the number without waiting for the pause
+    fireEvent.blur(field)
+    await waitFor(() => expect(listRequests(api.calls).at(-1)!.get('max_responses')).toBe('1500'), { timeout: 200 })
+    fireEvent.click(screen.getByRole('button', { name: 'Готово' }))
+
+    const chip = await screen.findByText('Откликов до 1 500')
+    expect(chip.closest('[title]')?.getAttribute('title')?.replace(/\s/g, ' ')).toBe(
+      'Скрыты вакансии, где откликов на hh.ru больше 1 500. Без счётчика откликов и с откликом в работе видны всегда.',
+    )
+    expect(screen.getByText('1 вакансия · 9 скрыто по числу откликов')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Сбросить все' })).toBeInTheDocument() // not a default
+
+    // the window closed by Escape right after the typing keeps the number too
+    fireEvent.click(screen.getByRole('button', { name: /^Фильтры/ }))
+    fireEvent.change(await screen.findByLabelText('Откликов до'), { target: { value: '700' } })
+    fireEvent.keyDown(screen.getByRole('dialog', { name: 'Фильтры' }), { key: 'Escape' })
+    expect(screen.queryByRole('dialog', { name: 'Фильтры' })).toBeNull()
+    await waitFor(() => expect(listRequests(api.calls).at(-1)!.get('max_responses')).toBe('700'), { timeout: 200 })
+    expect(await screen.findByText('Откликов до 700')).toBeInTheDocument()
+
+    // the cross takes the cap away and the browser forgets it
+    fireEvent.click(screen.getByRole('button', { name: 'Убрать фильтр «Откликов до 700»' }))
+    await waitFor(() => expect(listRequests(api.calls).at(-1)!.has('max_responses')).toBe(false))
+    expect(JSON.parse(localStorage.getItem(FILTERS_KEY) ?? '{}').max_responses).toBe('')
+    expect(screen.queryByText(/^Откликов до/)).toBeNull()
+  })
+
+  it('offers every vacancy when the responses cap alone emptied the group', async () => {
+    localStorage.setItem(FILTERS_KEY, JSON.stringify({ max_responses: '1000' }))
+    const api = stubApi({ '/api/vacancies/hidden-employers': [], '/api/vacancies': { ...EMPTY_LIST, fresh: FRESH, responses: { max: 1000, hidden: 9 } } })
+    renderAt('/vacancies', '/vacancies', <VacanciesPage />)
+    expect(await screen.findByText('Вакансий с откликами до 1 000 нет')).toBeInTheDocument()
+    expect(screen.getByText('Вакансий, где откликов больше 1 000: 9. Фильтр их скрывает.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Показать старые' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Показать с любым числом откликов' }))
+    await waitFor(() => expect(listRequests(api.calls).at(-1)!.has('max_responses')).toBe(false))
+    expect(listRequests(api.calls).at(-1)!.get('fresh_days')).toBe('5')
+  })
+
+  it('names both standing filters when both emptied the group and turns off only the one asked', async () => {
+    localStorage.setItem(FILTERS_KEY, JSON.stringify({ max_responses: '300' }))
+    const api = stubApi({ '/api/vacancies/hidden-employers': [], '/api/vacancies': { ...EMPTY_LIST, fresh: { ...FRESH, hidden: 3 }, responses: { max: 300, hidden: 2 } } })
+    renderAt('/vacancies', '/vacancies', <VacanciesPage />)
+    expect(await screen.findByText('Свежих вакансий с откликами до 300 нет')).toBeInTheDocument()
+    expect(screen.getByText('Вакансий из других городов старше 5 дней: 3; свежих, где откликов больше 300: 2. Фильтры их скрывают.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Показать с любым числом откликов' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Показать старые' }))
+    await waitFor(() => expect(listRequests(api.calls).at(-1)!.has('fresh_days')).toBe(false))
+    expect(listRequests(api.calls).at(-1)!.get('max_responses')).toBe('300')
+  })
+
   it('walks the list from the open card with J and K', async () => {
     const api = stubApi({
       '/api/vacancies/hidden-employers': [],
@@ -217,6 +330,43 @@ describe('VacanciesPage, classic view', () => {
       expect(last.has('min_score')).toBe(false)
       expect(last.get('group')).toBe('maybe')
     })
+  })
+
+  it('has the freshness filter among the open filters, on by default, and a reset turns it back on', async () => {
+    localStorage.setItem(LAYOUT_KEY, 'classic')
+    const api = stubApi({ '/api/vacancies/hidden-employers': [], '/api/vacancies': { ...list([row(5, 'Первая вакансия')]), fresh: { ...FRESH, hidden: 4 } } })
+    renderAt('/vacancies', '/vacancies', <VacanciesPage />)
+    const box = await screen.findByRole('checkbox', { name: 'Другие города: до 5 дней' })
+    expect(box).toBeChecked()
+    expect(await screen.findByText('1 вакансия · 4 старые скрыты')).toBeInTheDocument()
+    const reset = screen.getByRole('button', { name: 'Сбросить фильтры' })
+    expect(reset).toBeDisabled()
+    await waitFor(() => expect(listRequests(api.calls).at(-1)!.get('fresh_days')).toBe('5'))
+
+    fireEvent.click(box)
+    await waitFor(() => expect(listRequests(api.calls).at(-1)!.has('fresh_days')).toBe(false))
+    expect(reset).toBeEnabled()
+    fireEvent.click(reset)
+    await waitFor(() => expect(listRequests(api.calls).at(-1)!.get('fresh_days')).toBe('5'))
+    expect(screen.getByRole('checkbox', { name: 'Другие города: до 5 дней' })).toBeChecked()
+  })
+
+  it('has the responses cap next to the freshness filter, and a reset clears it', async () => {
+    localStorage.setItem(LAYOUT_KEY, 'classic')
+    const api = stubApi({ '/api/vacancies/hidden-employers': [], '/api/vacancies': { ...list([row(5, 'Первая вакансия')]), fresh: FRESH, responses: { max: 500, hidden: 3 } } })
+    renderAt('/vacancies', '/vacancies', <VacanciesPage />)
+    const field = await screen.findByLabelText('Откликов до')
+    expect(field).toHaveValue('')
+    const reset = screen.getByRole('button', { name: 'Сбросить фильтры' })
+    expect(reset).toBeDisabled()
+
+    fireEvent.change(field, { target: { value: '500' } })
+    await waitFor(() => expect(listRequests(api.calls).at(-1)!.get('max_responses')).toBe('500'))
+    expect(await screen.findByText('1 вакансия · 3 скрыты по числу откликов')).toBeInTheDocument()
+    expect(reset).toBeEnabled()
+    fireEvent.click(reset)
+    await waitFor(() => expect(listRequests(api.calls).at(-1)!.has('max_responses')).toBe(false))
+    expect(screen.getByLabelText('Откликов до')).toHaveValue('')
   })
 
   it('opens the card from a row of the table and walks it with J', async () => {
