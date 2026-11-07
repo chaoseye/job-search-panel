@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -81,6 +82,88 @@ def _clarify_condition() -> Any:
         .scalar_subquery()
     )
     return and_(Vacancy.pipeline_status.in_(CLARIFY_STATUSES), Vacancy.id.in_(letters))
+
+
+# ---- the freshness filter of the tabs ------------------------------------------------------------------------------
+# Outside the cities of the base questionnaire (`Preferences.areas`) a vacancy is shown only while its hh `published_at`
+# is within the last N days (5 in the page); remote ones are no exception and one without a city counts as another
+# city. A vacancy whose response is under way or done is never hidden (RESPONSE_STATUSES: the open page of the
+# assistant, the API queue, the sent one), one without a publication date neither (hh always gives it). On by default
+# in the page and in the menu counter (the browser keeps the filters); the API applies it only when asked
+# (`fresh_days`), so the board, the CLI and the other callers see what they saw before.
+RESPONSE_STATUSES = ("needs_manual", "queued", "sent", "already_applied")
+FRESH_DAYS_MAX = 365
+
+
+def area_key(name: str) -> str:
+    """A city compared the way the region rule does (rules.py: `norm`): case and «ё» aside."""
+    return " ".join(name.lower().replace("ё", "е").split())
+
+
+@dataclass(frozen=True)
+class Freshness:
+    days: int
+    home_areas: tuple[str, ...]  # as the questionnaire writes them (for the page's label)
+    cutoff: datetime  # published before it = stale
+
+    def condition(self) -> Any:
+        """Rows the filter keeps. Every column is in ix_vacancies_listing (0030): the list and the counters stay on
+        the index; lower() is the Unicode one of db/session.unicode_lower, so «казань» in the questionnaire is
+        «Казань» of hh."""
+        keep: list[Any] = [
+            Vacancy.pipeline_status.in_(RESPONSE_STATUSES),
+            Vacancy.published_at.is_(None),
+            Vacancy.published_at >= self.cutoff,
+        ]
+        keys = sorted({area_key(a) for a in self.home_areas if a.strip()})
+        if keys:
+            keep.append(func.replace(func.lower(Vacancy.area_name), "ё", "е").in_(keys))
+        return or_(*keep)
+
+
+async def home_areas(session: AsyncSession) -> tuple[str, ...]:
+    """The cities exempt from the freshness filter: the regions of the base questionnaire (the named criteria sets
+    keep theirs for the rules only)."""
+    prefs = await get_preferences(session)
+    return tuple(a.strip() for a in prefs.areas if a.strip())
+
+
+async def freshness(session: AsyncSession, days: int | None) -> Freshness | None:
+    """The filter for `days` (None — off). One cutoff for the list and its counters of the same request."""
+    if not days:
+        return None
+    days = max(1, min(int(days), FRESH_DAYS_MAX))
+    return Freshness(days=days, home_areas=await home_areas(session), cutoff=utcnow() - timedelta(days=days))
+
+
+# ---- the responses cap of the tabs --------------------------------------------------------------------------------
+# A vacancy with a thousand responses means heavy competition: the user may keep only those with up to N responses.
+# Off by default, the user sets the number; then it works like the freshness filter: every group but the response
+# stages (RESPONSE_STATUSES), the counters of the tabs and of the menu follow it. The number is hh `counters.responses`
+# from the search results — the full card has no counters: the scan takes it when the vacancy comes in them (found, or
+# raised by the employer), and the job `responses` re-reads the results of the enabled searches for the last days
+# (services/responses_refresh.py). A vacancy without it stays (unknown is not «many»).
+RESPONSES_CAP_MAX = 999_999
+
+
+def responses_condition(max_responses: int) -> Any:
+    """Rows the responses cap keeps; `responses_count` is in ix_vacancies_listing (0031)."""
+    return or_(
+        Vacancy.pipeline_status.in_(RESPONSE_STATUSES),
+        Vacancy.responses_count.is_(None),
+        Vacancy.responses_count <= max_responses,
+    )
+
+
+def scope_conditions(fresh: Freshness | None, max_responses: int | None) -> list[Any]:
+    """The standing filters of the tabs (freshness, responses cap) as WHERE conditions — the list and every counter
+    apply the same."""
+    out: list[Any] = []
+    if fresh is not None:
+        out.append(fresh.condition())
+    if max_responses is not None:
+        out.append(responses_condition(max_responses))
+    return out
 
 
 STATUS_LABELS = {
@@ -204,8 +287,12 @@ def _apply_filters(
     unseen_only: bool,
     selection_profile_id: int | None = None,
     experience: list[str] | None = None,
+    fresh: Freshness | None = None,
+    max_responses: int | None = None,
 ) -> Select[Any]:
     statuses = GROUPS.get(group, CANDIDATE_STATUSES)
+    for cond in scope_conditions(fresh, max_responses):
+        stmt = stmt.where(cond)
     if selection_profile_id is not None:
         # 0 = base questionnaire (NULL), otherwise the named set
         stmt = stmt.where(
@@ -264,7 +351,10 @@ async def list_vacancies(
     per_page: int = 50,
     selection_profile_id: int | None = None,
     experience: list[str] | None = None,
+    fresh_days: int | None = None,
+    max_responses: int | None = None,
 ) -> dict[str, Any]:
+    fresh = await freshness(session, fresh_days)
     filters = dict(
         group=group,
         min_score=min_score,
@@ -277,9 +367,22 @@ async def list_vacancies(
         unseen_only=unseen_only,
         selection_profile_id=selection_profile_id,
         experience=experience,
+        fresh=fresh,
+        max_responses=max_responses,
     )
-    count_stmt = _apply_filters(select(func.count(Vacancy.id)), **filters)  # type: ignore[arg-type]
-    total = int((await session.execute(count_stmt)).scalar() or 0)
+
+    async def count(**over: Any) -> int:
+        stmt = _apply_filters(select(func.count(Vacancy.id)), **{**filters, **over})
+        return int((await session.execute(stmt)).scalar() or 0)
+
+    total = await count()
+    # what the standing filters took out of this very list (the other filters applied), one after the other so the
+    # two add up to all they hide: the responses cap — the fresh ones over the cap; the freshness filter — every stale
+    capped = stale = 0
+    if max_responses is not None:
+        capped = await count(max_responses=None) - total
+    if fresh is not None:
+        stale = await count(fresh=None, max_responses=None) - total - capped
 
     # the ids of the page first, then those rows: sorting whole rows made SQLite carry every ~46 KB payload through
     # the sorter (500 ms on 10 000 vacancies); the ids come from the covering index ix_vacancies_listing
@@ -309,7 +412,14 @@ async def list_vacancies(
         "total": total,
         "page": page,
         "per_page": per_page,
-        "counts": await status_counts(session),
+        "counts": await status_counts(session, fresh=fresh, max_responses=max_responses),
+        # the page names the exempt cities in the filter even while it is off
+        "fresh": {
+            "days": fresh.days if fresh else None,
+            "home_areas": list(fresh.home_areas if fresh else await home_areas(session)),
+            "hidden": stale,
+        },
+        "responses": {"max": max_responses, "hidden": capped},
     }
 
 
@@ -358,12 +468,16 @@ def evaluation_row(ev: VacancyEvaluation, active_version: int | None) -> dict[st
     }
 
 
-async def status_counts(session: AsyncSession) -> dict[str, int]:
+async def status_counts(
+    session: AsyncSession, *, fresh: Freshness | None = None, max_responses: int | None = None
+) -> dict[str, int]:
     """Counters of the tabs and the menu. One pass over the covering index ix_vacancies_listing (status, hidden,
-    snoozed_until, seen_by_user_at, …) — the table itself is not read; the letters needing clarification come from
-    cover_letters."""
+    snoozed_until, seen_by_user_at, …, area_name, responses_count) — the table itself is not read; the letters needing
+    clarification come from cover_letters. With the standing filters (`fresh`, `max_responses`) every counter counts
+    only what they show: the numbers match the list."""
     now = utcnow()
     visible = and_(Vacancy.hidden.is_(False), or_(Vacancy.snoozed_until.is_(None), Vacancy.snoozed_until <= now))
+    shown = scope_conditions(fresh, max_responses)
 
     def n(cond: Any) -> Any:
         return func.coalesce(func.sum(case((cond, 1), else_=0)), 0)
@@ -377,7 +491,9 @@ async def status_counts(session: AsyncSession) -> dict[str, int]:
                 n(Vacancy.hidden.is_(True)),
                 n(Vacancy.snoozed_until > now),
                 n(and_(visible, Vacancy.seen_by_user_at.is_(None))),
-            ).group_by(Vacancy.pipeline_status)
+            )
+            .where(*shown)
+            .group_by(Vacancy.pipeline_status)
         )
     ).all()
     by_status = {str(status): int(vis) for status, _total, vis, _h, _s, _u in rows if vis}
@@ -390,7 +506,8 @@ async def status_counts(session: AsyncSession) -> dict[str, int]:
     counts["snoozed"] = sum(int(r[4]) for r in rows)
     counts["unseen_candidates"] = sum(int(r[5]) for r in rows if r[0] in CANDIDATE_STATUSES)
     counts["needs_clarification"] = int(
-        (await session.execute(select(func.count(Vacancy.id)).where(visible, _clarify_condition()))).scalar() or 0
+        (await session.execute(select(func.count(Vacancy.id)).where(visible, *shown, _clarify_condition()))).scalar()
+        or 0
     )
     counts["total"] = sum(int(r[1]) for r in rows)
     return counts
@@ -576,6 +693,69 @@ async def hide(session: AsyncSession, row: Vacancy) -> None:
 
 
 ALREADY_ON_HH = "already_applied"
+UNAVAILABLE_REASON = "недоступна на hh.ru (отметил пользователь)"
+# responses that have not gone yet: the open page of the assistant (or a manual step hh asked for) and the API queue
+OPEN_RESPONSE_STATUSES = ("needs_manual", "queued")
+
+
+async def cancel_response(session: AsyncSession, app_row: Application, *, error_text: str, why: str) -> None:
+    """One response that has not gone → `cancelled`: `error_text` is what «Отклики» shows under it, `why` ends the
+    journal entry «Отклик #N отменён: …»."""
+    app_row.status = "cancelled"
+    app_row.error_text = error_text
+    await audit(
+        session,
+        "apply",
+        f"Отклик #{app_row.id} отменён: {why}",
+        vacancy_id=app_row.vacancy_id,
+        application_id=app_row.id,
+    )
+
+
+async def cancel_open_responses(session: AsyncSession, row: Vacancy, why: str) -> int:
+    """Cancels the responses of a vacancy the user found unavailable on hh.ru («вакансия <why>»): the open page of the
+    assistant and the API queue. The user saw the page refuse, so «не отправлен» is what happened. Sent ones stay.
+    The nightly check of closed vacancies cancels on its own terms (freshness.cancel_unconfirmed). Returns how many
+    were cancelled."""
+    pending = (
+        (
+            await session.execute(
+                select(Application).where(
+                    Application.vacancy_id == row.id, Application.status.in_(OPEN_RESPONSE_STATUSES)
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for app_row in pending:
+        await cancel_response(session, app_row, error_text=f"не отправлен: вакансия {why}", why=f"вакансия {why}")
+    return len(pending)
+
+
+async def mark_unavailable(session: AsyncSession, row: Vacancy) -> int:
+    """hh.ru answers «Вам недоступна эта вакансия» (closed or hidden by the employer) — the user says so from the
+    response flow. The response that has not gone cancels: the open page of the assistant could
+    not be sent, the API queue would fail on it. A sent one keeps the vacancy as it is (409). The vacancy is hidden:
+    it leaves the candidates, the board and the bot (its letter message turns into «Скрыта»); «Вернуть» brings it back,
+    and a repost by the employer is a new vacancy (hidden ones are no twins, scanner.NOT_A_TWIN). Returns how many
+    responses were cancelled."""
+    sent = (
+        await session.execute(
+            select(Application.id)
+            .where(Application.vacancy_id == row.id, Application.status.in_(("sent", "sending")))
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if sent is not None or row.pipeline_status in ("sent", ALREADY_ON_HH):
+        raise VacancyActionError("Отклик по вакансии уже отправлен, отмечать её недоступной не нужно")
+    cancelled = await cancel_open_responses(session, row, "недоступна на hh.ru")
+    row.hidden = True
+    row.pipeline_status = "hidden"
+    row.pipeline_reason = UNAVAILABLE_REASON
+    await audit(session, "vacancies", f"Недоступна на hh.ru, скрыта «{row.name}»", vacancy_id=row.id)
+    await _resolve_bot_message(session, row, "hidden")
+    return cancelled
 
 
 async def restore(session: AsyncSession, row: Vacancy, settings: Settings | None = None) -> None:

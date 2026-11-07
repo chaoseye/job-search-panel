@@ -54,7 +54,7 @@ async def test_doctor_with_a_configured_panel(settings: Settings) -> None:
     report = await collect(configured)
     by_id = {c.id: c for c in report.checks}
     assert by_id["hh_app"].status == OK and by_id["user_agent"].status == OK
-    assert by_id["database"].status == OK and "0029" in by_id["database"].detail
+    assert by_id["database"].status == OK and "0031" in by_id["database"].detail
     assert by_id["telegram"].status == OK and by_id["imap"].status == OK
     assert by_id["channels"].detail == "не добавлены (необязательно)"
     assert by_id["hh_login"].status == WARN and by_id["profile"].status == WARN and by_id["searches"].status == WARN

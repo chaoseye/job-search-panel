@@ -18,6 +18,9 @@ from app.services.state import auth_public_state, get_hh_auth
 log = structlog.get_logger("scheduler")
 # how often the probe tick looks whether PROBE_INTERVAL_DAYS have passed since the last probe
 PROBE_CHECK_HOURS = 6
+# how often the tick of the responses counter looks whether RESPONSES_REFRESH_HOURS have passed since the last pass:
+# a pass the scan kept from starting is tried again a quarter of an hour later, not three hours later
+RESPONSES_TICK_MIN = 15
 
 
 async def auth_check(runtime: Runtime) -> None:
@@ -319,6 +322,21 @@ async def freshness_tick(runtime: Runtime) -> None:
         log.info("freshness_tick_skipped_busy")
 
 
+async def responses_tick(runtime: Runtime) -> None:
+    """The responses counter from fresh search results (job `responses`) every RESPONSES_REFRESH_HOURS hours."""
+    from app.services.responses_refresh import JOB, refresh_due, refresh_responses
+
+    async with runtime.session_factory() as session:
+        state = auth_public_state(await get_hh_auth(session))
+        due = await refresh_due(session, runtime.settings.responses_refresh_hours)
+    if not state["logged_in"] or not due:
+        return
+    try:
+        await runtime.jobs.start(JOB, lambda: refresh_responses(runtime))
+    except JobBusy:
+        log.info("responses_tick_skipped_busy")
+
+
 async def mail_tick(runtime: Runtime) -> None:
     """hh.ru notification e-mails → manual journal (job `mail_sync`) every IMAP_SYNC_MIN minutes."""
     from app.services.mail_sync import sync_mail
@@ -605,6 +623,18 @@ def build_scheduler(runtime: Runtime) -> AsyncIOScheduler:
             coalesce=True,
             replace_existing=True,
             misfire_grace_time=60 * 60,
+        )
+    if runtime.settings.responses_refresh_hours > 0:
+        scheduler.add_job(
+            responses_tick,
+            "interval",
+            minutes=RESPONSES_TICK_MIN,
+            args=[runtime],
+            id="responses_refresh",
+            max_instances=1,
+            coalesce=True,
+            replace_existing=True,
+            next_run_time=datetime.now(UTC) + timedelta(minutes=5),  # an overdue pass soon after the start
         )
     bump_slots, bump_days = reminder_schedule(runtime.settings)
     for hour, minute in bump_slots if bump_days else []:

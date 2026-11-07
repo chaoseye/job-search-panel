@@ -395,12 +395,29 @@ export interface VacancyCounts {
   total: number
 }
 
+/** The freshness filter of the list: outside `home_areas` (the regions of the base questionnaire) only vacancies
+ *  published within `days` (null — the filter is off); `hidden` — how many it took out of this list. */
+export interface VacancyFreshness {
+  days: number | null
+  home_areas: string[]
+  hidden: number
+}
+
+/** The responses cap of the list: only vacancies with at most `max` responses on hh.ru (null — off); `hidden` — how
+ *  many it took out of this list after the freshness filter. */
+export interface VacancyResponsesCap {
+  max: number | null
+  hidden: number
+}
+
 export interface VacancyList {
   items: VacancyRow[]
   total: number
   page: number
   per_page: number
   counts: VacancyCounts
+  fresh: VacancyFreshness
+  responses: VacancyResponsesCap
 }
 
 export interface Evaluation {

@@ -369,7 +369,14 @@ async def test_freshness_check_closes_stale_candidates(api, respx_mock: respx.Mo
         return_value=httpx.Response(200, json=_full("3", **{**VACANCIES["3"], "counters": {"responses": 99}}))
     )
     summary = await check_closed(runtime, stale_days=2)
-    assert summary == {"checked": 2, "closed": 1, "refreshed": 1, "errors": 0, "candidates": 2}
+    assert summary == {
+        "checked": 2,
+        "closed": 1,
+        "refreshed": 1,
+        "errors": 0,
+        "responses_cancelled": 0,
+        "candidates": 2,
+    }
     rows = {v["hh_id"]: v for v in (await client.get("/api/vacancies", params={"group": "all"})).json()["items"]}
     assert rows["2"]["pipeline_status"] == "filtered_out" and "удалена" in rows["2"]["pipeline_reason"]
     assert (

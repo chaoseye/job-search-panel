@@ -24,6 +24,7 @@ JOB_LABELS: dict[str, str] = {
     "scan": "сканирование",
     "reprocess": "переоценка по критериям",
     "freshness": "проверка закрытых вакансий",
+    "responses": "обновление числа откликов",
     "sync": "синхронизация откликов",
     "apply": "отправка откликов",
     "claude_run": "разбор пакетов (claude -p)",
@@ -39,7 +40,7 @@ JOB_LABELS: dict[str, str] = {
 # Jobs that rewrite the same vacancy rows and call hh.ru: at most one of them at a time, whoever starts them (tick,
 # button, criteria change). SQLite has one writer — a scan started by the button during a re-evaluation would fail
 # with «database is locked».
-EXCLUSIVE_GROUP = frozenset({"scan", "reprocess", "freshness", "sync"})
+EXCLUSIVE_GROUP = frozenset({"scan", "reprocess", "freshness", "sync", "responses"})
 # a job body that finished its loop but achieved nothing (every search failed, hh.ru demanded a captcha) returns its
 # stats with this key: the run is recorded as an error with the stats kept, and FAILURES_TO_NOTIFY such runs in a row
 # reach Telegram (`job_error`) — before, a scan against an unreachable hh.ru was «ok» forever

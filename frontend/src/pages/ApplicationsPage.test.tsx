@@ -1,5 +1,5 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
 import { renderAt, stubApi } from '../test/render'
 import ApplicationsPage from './ApplicationsPage'
 
@@ -112,5 +112,18 @@ describe('ApplicationsPage', () => {
     fireEvent.click(screen.getByRole('menuitemradio', { name: 'Просмотр' }))
     await waitFor(() => expect(sortedBy(api.calls, 'viewed', 'asc')).toBe(true))
     expect(screen.getByRole('button', { name: 'Просмотр, по возрастанию' })).toBeInTheDocument()
+  })
+
+  it('closes an open response of a vacancy hh.ru no longer shows by «Вакансия недоступна»', async () => {
+    vi.stubGlobal('open', vi.fn())
+    const waiting = row(3, { status: 'needs_manual', status_label: 'нужно действие', sent_at: null, confirmed_by_user: false, letter_text: 'Здравствуйте!' })
+    const api = stubApi({ ...STATUS, '/api/vacancies/3/unavailable': {}, '/api/applications': { items: [waiting], total: 1, page: 0, per_page: 50, counts: {} } })
+    renderAt('/applications', '/applications', <ApplicationsPage />)
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Открыть и подтвердить' }))[0])
+    const panel = await screen.findByRole('region', { name: 'Отклик на hh.ru' })
+    fireEvent.click(within(panel).getByRole('button', { name: 'Вакансия недоступна' }))
+    await waitFor(() => expect(api.requests.some((r) => r.method === 'POST' && r.path === '/api/vacancies/3/unavailable')).toBe(true))
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Отклик на hh.ru' })).toBeNull())
+    expect(api.requests.some((r) => r.path === '/api/applications/3/confirm')).toBe(false)
   })
 })

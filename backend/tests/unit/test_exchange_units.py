@@ -5,7 +5,7 @@ import sys
 import pytest
 from pydantic import ValidationError
 
-from app.config import Settings
+from app.config import ROOT_DIR, Settings
 from app.exchange.guidelines_md import (
     GUIDELINES_MD,
     GUIDELINES_VERSION,
@@ -74,6 +74,16 @@ def test_ensure_guidelines_writes_once(settings: Settings) -> None:
     assert ensure_guidelines(settings) is False
     path.write_text("---\nguidelines_version: 0\n---\nold", encoding="utf-8")
     assert ensure_guidelines(settings) is True
+
+
+def test_letter_marker_only_on_a_direct_ask_of_the_vacancy() -> None:
+    """A marker blocks sending. «Неясное — маркер» let the model mark any gap of the candidate, and most letters
+    waited for a hand edit. Claude reads the rule from two files, so both have to say the same."""
+    command = (ROOT_DIR / ".claude" / "commands" / "hh-batch.md").read_text(encoding="utf-8")
+    for text in (GUIDELINES_MD, command):
+        flat = " ".join(text.split())
+        assert "только если вакансия прямо просит указать в отклике то, чего в профиле" in flat
+        assert "в письме не упоминай и маркером не отмечай" in flat
 
 
 def test_guidelines_name_the_scanner_interpreter_of_this_machine(settings: Settings) -> None:

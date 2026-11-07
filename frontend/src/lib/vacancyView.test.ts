@@ -1,7 +1,22 @@
 import { describe, expect, it } from 'vitest'
 import type { SavedSearch, SelectionProfile } from '../api/types'
 import { DEFAULT_FILTERS } from './vacancyFilters'
-import { clearFilters, filterChips, pipelineOf, rowFlags, rowStatus, salaryPublished } from './vacancyView'
+import {
+  canResetFilters,
+  cappedText,
+  clearFilters,
+  filterChips,
+  freshHint,
+  freshLabel,
+  pipelineOf,
+  responsesHint,
+  responsesLabel,
+  rowFlags,
+  rowStatus,
+  salaryPublished,
+  scopeEmpty,
+  staleText,
+} from './vacancyView'
 
 const sp = (s: string | null) => s?.replace(/\s/g, ' ') ?? null // ru-RU groups thousands with a (narrow) no-break space
 
@@ -16,8 +31,29 @@ const salary = (over: Partial<{ from: number | null; to: number | null; currency
 })
 
 describe('filterChips', () => {
-  it('has no chip for the defaults: the tab, the sort and the text query are shown elsewhere', () => {
-    expect(filterChips({ ...DEFAULT_FILTERS, group: 'sent', sort: 'salary', q: 'python' })).toEqual([])
+  it('has only the freshness chip for the defaults: the tab, the sort and the text query are shown elsewhere', () => {
+    const chips = filterChips({ ...DEFAULT_FILTERS, group: 'sent', sort: 'salary', q: 'python' }, [], [], ['Казань'])
+    expect(chips.map((c) => [c.key, c.label, c.title])).toEqual([
+      ['fresh', 'Другие города: до 5 дней', 'Без срока: Казань (регионы анкеты) и вакансии с откликом в работе.'],
+    ])
+    expect(filterChips({ ...DEFAULT_FILTERS, fresh_days: '' })).toEqual([])
+  })
+
+  it('turns the freshness filter off with its cross', () => {
+    const chip = filterChips(DEFAULT_FILTERS).find((c) => c.key === 'fresh')!
+    expect(chip.clear(DEFAULT_FILTERS)).toEqual({ ...DEFAULT_FILTERS, fresh_days: '' })
+  })
+
+  it('shows the responses cap next to the freshness filter and clears it with its cross', () => {
+    const f = { ...DEFAULT_FILTERS, max_responses: '1000' }
+    const chips = filterChips(f, [], [], ['Казань'])
+    expect(chips.map((c) => [c.key, sp(c.label), sp(c.title ?? null)])).toEqual([
+      ['fresh', 'Другие города: до 5 дней', 'Без срока: Казань (регионы анкеты) и вакансии с откликом в работе.'],
+      ['responses', 'Откликов до 1 000', 'Скрыты вакансии, где откликов на hh.ru больше 1 000. Без счётчика откликов и с откликом в работе видны всегда.'],
+    ])
+    expect(chips[1].clear(f)).toEqual(DEFAULT_FILTERS)
+    // 0 is a cap too: only the vacancies nobody answered yet
+    expect(filterChips({ ...DEFAULT_FILTERS, fresh_days: '', max_responses: '0' }).map((c) => c.label)).toEqual(['Откликов до 0'])
   })
 
   it('names every filter that hides part of the list', () => {
@@ -32,9 +68,13 @@ describe('filterChips', () => {
       min_score: '70',
       unseen_only: true,
       include_snoozed: true,
+      fresh_days: '7',
+      max_responses: '300',
     }
     const searches = [{ id: 7, name: 'QA-автоматизация' }] as SavedSearch[]
-    expect(filterChips(f, searches).map((c) => sp(c.label))).toEqual([
+    expect(filterChips(f, searches, [], []).map((c) => sp(c.label))).toEqual([
+      'Не старше 7 дней',
+      'Откликов до 300',
       'Поиск: QA-автоматизация',
       'Критерии: основная анкета',
       'Формат: гибрид',
@@ -49,7 +89,7 @@ describe('filterChips', () => {
   })
 
   it('falls back to the number of a search or a set that is gone', () => {
-    const chips = filterChips({ ...DEFAULT_FILTERS, search_id: '41', selection_profile_id: '3' }, [], [] as SelectionProfile[])
+    const chips = filterChips({ ...DEFAULT_FILTERS, search_id: '41', selection_profile_id: '3', fresh_days: '' }, [], [] as SelectionProfile[])
     expect(chips.map((c) => c.label)).toEqual(['Поиск: №41', 'Критерии: №3'])
   })
 
@@ -64,6 +104,75 @@ describe('clearFilters', () => {
   it('keeps the tab and the sort order, drops everything else', () => {
     const f = { ...DEFAULT_FILTERS, group: 'maybe', sort: 'published', q: 'go', area: 'Москва', min_score: '50', unseen_only: true }
     expect(clearFilters(f)).toEqual({ ...DEFAULT_FILTERS, group: 'maybe', sort: 'published' })
+  })
+
+  it('turns the freshness filter back on and clears the responses cap: the defaults', () => {
+    expect(clearFilters({ ...DEFAULT_FILTERS, fresh_days: '' }).fresh_days).toBe('5')
+    expect(clearFilters({ ...DEFAULT_FILTERS, max_responses: '1000' }).max_responses).toBe('')
+  })
+})
+
+describe('canResetFilters', () => {
+  it('has nothing to reset in the defaults, whatever the tab and the sort', () => {
+    expect(canResetFilters(DEFAULT_FILTERS)).toBe(false)
+    expect(canResetFilters({ ...DEFAULT_FILTERS, group: 'sent', sort: 'salary' })).toBe(false)
+  })
+  it('resets a filter turned off or set', () => {
+    expect(canResetFilters({ ...DEFAULT_FILTERS, fresh_days: '' })).toBe(true)
+    expect(canResetFilters({ ...DEFAULT_FILTERS, max_responses: '1000' })).toBe(true)
+    expect(canResetFilters({ ...DEFAULT_FILTERS, q: 'go' })).toBe(true)
+    expect(canResetFilters({ ...DEFAULT_FILTERS, include_snoozed: true })).toBe(true)
+  })
+})
+
+describe('the freshness filter in words', () => {
+  it('says «другие города» while the questionnaire names cities, every city otherwise', () => {
+    expect(freshLabel(5, ['Казань'])).toBe('Другие города: до 5 дней')
+    expect(freshLabel(1, ['Казань'])).toBe('Другие города: до 1 дня')
+    expect(freshLabel(3, [])).toBe('Не старше 3 дней')
+    expect(freshLabel(5)).toBe('Другие города: до 5 дней') // not loaded yet
+  })
+  it('names the spared cities in the hint', () => {
+    expect(freshHint(['Казань', 'Пермь'])).toBe('Без срока: Казань, Пермь (регионы анкеты) и вакансии с откликом в работе.')
+    expect(freshHint([])).toBe('Без срока только вакансии с откликом в работе: в анкете не указаны регионы.')
+    expect(freshHint()).toBe('Без срока: города из регионов анкеты и вакансии с откликом в работе.')
+  })
+  it('counts what it hid with the right word form', () => {
+    expect(staleText(1)).toBe('1 старая скрыта')
+    expect(staleText(3)).toBe('3 старые скрыты')
+    expect(staleText(69)).toBe('69 старых скрыто')
+    expect(staleText(21)).toBe('21 старая скрыта')
+    expect(sp(staleText(1500))).toBe('1 500 старых скрыто')
+  })
+})
+
+describe('the responses cap in words', () => {
+  it('names the cap and what it spares', () => {
+    expect(sp(responsesLabel(1000))).toBe('Откликов до 1 000')
+    expect(responsesLabel(50)).toBe('Откликов до 50')
+    expect(responsesHint(null)).toBe('Пусто — без ограничения. Без счётчика откликов и с откликом в работе видны всегда.')
+  })
+  it('counts what it hid with the right word form', () => {
+    expect(cappedText(1)).toBe('1 скрыта по числу откликов')
+    expect(cappedText(3)).toBe('3 скрыты по числу откликов')
+    expect(cappedText(9)).toBe('9 скрыто по числу откликов')
+    expect(sp(cappedText(1200))).toBe('1 200 скрыто по числу откликов')
+  })
+})
+
+describe('scopeEmpty: the list the standing filters emptied', () => {
+  const base = { stale: 0, capped: 0, days: 5, cap: null, homeAreas: ['Казань'] }
+  it('names the old vacancies when only freshness hid them', () => {
+    expect(scopeEmpty({ ...base, stale: 69 })).toEqual({ title: 'Свежих вакансий нет', text: 'Вакансий из других городов старше 5 дней: 69. Фильтр их скрывает.' })
+    expect(scopeEmpty({ ...base, stale: 2, days: 1, homeAreas: [] }).text).toBe('Вакансий старше 1 дня: 2. Фильтр их скрывает.')
+  })
+  it('names the crowded vacancies when only the cap hid them', () => {
+    const e = scopeEmpty({ ...base, capped: 9, cap: 1000 })
+    expect([sp(e.title), sp(e.text)]).toEqual(['Вакансий с откликами до 1 000 нет', 'Вакансий, где откликов больше 1 000: 9. Фильтр их скрывает.'])
+  })
+  it('names both when both hid some: the cap counts only the fresh ones', () => {
+    const e = scopeEmpty({ ...base, stale: 3, capped: 2, cap: 300 })
+    expect([e.title, e.text]).toEqual(['Свежих вакансий с откликами до 300 нет', 'Вакансий из других городов старше 5 дней: 3; свежих, где откликов больше 300: 2. Фильтры их скрывают.'])
   })
 })
 

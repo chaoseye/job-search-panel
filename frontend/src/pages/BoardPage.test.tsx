@@ -159,7 +159,7 @@ const API = {
   // the page reads nothing from these answers, it refreshes the columns
   '/api/applications/7/confirm': {},
   '/api/applications/9/manual-update': {},
-  '/api/applications/assist/open': { ...application(50, { status: 'needs_manual', sent_at: null }), vacancy: { id: 101, hh_id: '1101', name: READY.name, employer_name: 'Компания', alternate_url: null, apply_alternate_url: null, pipeline_status: 'needs_manual', score: 80 }, apply_url: READY.apply_alternate_url },
+  '/api/applications/assist/open': { ...application(50, { status: 'needs_manual', sent_at: null, vacancy_id: 101 }), vacancy: { id: 101, hh_id: '1101', name: READY.name, employer_name: 'Компания', alternate_url: null, apply_alternate_url: null, pipeline_status: 'needs_manual', score: 80 }, apply_url: READY.apply_alternate_url },
 }
 
 const location = () => screen.getByTestId('location').textContent
@@ -248,6 +248,31 @@ describe('BoardPage', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Не отправил' }))
     await waitFor(() => expect(requests.filter((r) => r.path === '/api/applications/7/confirm').map((r) => r.body)).toEqual([{ sent: true }, { sent: false }]))
+  })
+
+  it('hides a vacancy hh.ru no longer shows: «Вакансия недоступна» in the column and in the panel of the response', async () => {
+    const opened = item(row(303, 'Тестировщик ПО'), { application: application(7, { status: 'needs_manual', sent_at: null }) })
+    const { requests } = stubApi({ ...API, '/api/board/column/confirm': list('confirm', [opened]), '/api/vacancies/303/unavailable': {}, '/api/vacancies/101/unavailable': {} })
+    const { unmount } = renderAt('/board?col=confirm', '/board', <BoardPage />)
+    const button = await screen.findByRole('button', { name: 'Вакансия недоступна' })
+    expect(button).toHaveAttribute('title', 'hh.ru пишет, что вакансия недоступна: отклик отменится, вакансия уйдёт в «Скрытые»')
+    fireEvent.click(button)
+    await waitFor(() => expect(requests.some((r) => r.path === '/api/vacancies/303/unavailable' && r.method === 'POST')).toBe(true))
+    expect(await screen.findByText('Вакансия недоступна: отклик отменён, вакансия в «Скрытых»')).toBeInTheDocument()
+    // not the «sent / not sent» answer of the response
+    expect(requests.some((r) => r.path === '/api/applications/7/confirm')).toBe(false)
+    unmount()
+
+    // the panel that opens with the response page offers the same
+    vi.stubGlobal('open', vi.fn())
+    renderAt('/board?col=new&band=hi', '/board', <BoardPage />)
+    await screen.findByText('Сводка Claude по вакансии Frontend-разработчик')
+    press('Enter')
+    const panel = await screen.findByRole('region', { name: 'Отклик на hh.ru' })
+    fireEvent.click(within(panel).getByRole('button', { name: 'Вакансия недоступна' }))
+    await waitFor(() => expect(requests.some((r) => r.path === '/api/vacancies/101/unavailable')).toBe(true))
+    expect(await screen.findByText('Вакансия недоступна: отклик отменён, вакансия в «Скрытых»')).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Отклик на hh.ru' })).toBeNull()
   })
 
   it('records the employer side of a sent response by hand: viewed by Enter, an invitation by its button', async () => {

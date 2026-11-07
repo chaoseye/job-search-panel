@@ -6,7 +6,7 @@ import { apiDelete, apiGet, apiPost } from '../api/client'
 import type { AddByLinksResult, ApplicationRow, ApplyStatus, HiddenEmployer, JobsView, QueueResult, SavedSearch, SelectionProfile, VacancyCounts, VacancyList, VacancyRow } from '../api/types'
 import AssistPanel from '../components/AssistPanel'
 import ConsentModal from '../components/ConsentModal'
-import { ClassicFilters, ClassicTable, HiddenEmployersPanel } from '../components/VacanciesClassic'
+import { ClassicFilters, ClassicTable, HiddenEmployersPanel, ResponsesCapInput } from '../components/VacanciesClassic'
 import VacancyDrawer, { type DrawerPosition } from '../components/VacancyDrawer'
 import { Badge, Count } from '../components/ui/Badge'
 import { Button } from '../components/ui/Button'
@@ -27,21 +27,29 @@ import { EmptyState, ErrorNotice, Notice, Skeleton } from '../components/ui/Stat
 import { Tabs } from '../components/ui/Tabs'
 import { useMediaQuery } from '../components/ui/useMediaQuery'
 import { countOf, formatDateTime, plural, relativeTime, shortAgo, shortDate } from '../lib/format'
-import { FILTERS_KEY, isGroup, LAYOUT_KEY, loadFilters, loadLayout, type Filters, type VacancyLayout } from '../lib/vacancyFilters'
+import { FILTERS_KEY, FRESH_DAYS, isGroup, LAYOUT_KEY, loadFilters, loadLayout, scopeQuery, type Filters, type VacancyLayout } from '../lib/vacancyFilters'
 import {
+  canResetFilters,
+  cappedText,
   clearFilters,
   EXPERIENCE_LEVELS,
   experienceShort,
   filterChips,
   formatsShort,
+  freshDays,
+  freshHint,
+  freshLabel,
   GROUP_LABEL,
   MORE_GROUPS,
   PRIMARY_GROUPS,
+  responsesHint,
   rowFlags,
   rowStatus,
   salaryNet,
   salaryPublished,
+  scopeEmpty,
   SORTS,
+  staleText,
   WORK_FORMATS,
 } from '../lib/vacancyView'
 
@@ -105,6 +113,15 @@ export default function VacanciesPage() {
       /* ignore */
     }
   }, [filters])
+  // the menu counts the new vacancies with the saved standing filters — freshness, the responses cap (AppShell reads
+  // them when it fetches): switching one refreshes that number too; this effect runs after the one that saved them
+  const scope = scopeQuery(filters)
+  const savedScope = useRef(scope)
+  useEffect(() => {
+    if (savedScope.current === scope) return
+    savedScope.current = scope
+    void qc.invalidateQueries({ queryKey: ['vacancy-summary'] })
+  }, [scope, qc])
   useEffect(() => {
     try {
       localStorage.setItem(LAYOUT_KEY, layout)
@@ -125,6 +142,8 @@ export default function VacanciesPage() {
   if (filters.q) params.set('q', filters.q)
   if (filters.include_snoozed) params.set('include_snoozed', 'true')
   if (filters.unseen_only) params.set('unseen_only', 'true')
+  if (filters.fresh_days) params.set('fresh_days', filters.fresh_days)
+  if (filters.max_responses) params.set('max_responses', filters.max_responses)
   params.set('sort', filters.sort)
   params.set('page', String(page))
   params.set('per_page', String(PER_PAGE))
@@ -219,8 +238,19 @@ export default function VacanciesPage() {
   const items = list.data?.items ?? []
   const total = list.data?.total ?? 0
   const groupCount = (id: string): number | undefined => (counts ? (id === 'all' ? counts.total : (counts as unknown as Record<string, number>)[id]) : undefined)
-  const chips = filterChips(filters, searches.data, sets.data?.items)
-  const narrowed = chips.length > 0 || Boolean(filters.q)
+  // the cities the freshness filter spares (the questionnaire's regions): kept between the lists so the chip does not
+  // change its words while the next page loads
+  const lastHomeAreas = useRef<string[] | undefined>(undefined)
+  if (list.data?.fresh) lastHomeAreas.current = list.data.fresh.home_areas
+  const homeAreas = list.data?.fresh?.home_areas ?? lastHomeAreas.current
+  const stale = list.data?.fresh?.hidden ?? 0 // what the freshness filter took out of this list
+  const capped = list.data?.responses?.hidden ?? 0 // what the responses cap took out of what freshness left
+  const cap = filters.max_responses ? Number(filters.max_responses) : null
+  const chips = filterChips(filters, searches.data, sets.data?.items, homeAreas)
+  // the counters of the groups already follow the standing filters (freshness, the responses cap): their chips alone
+  // narrow nothing
+  const narrowed = chips.some((c) => c.key !== 'fresh' && c.key !== 'responses') || Boolean(filters.q)
+  const canReset = canResetFilters(filters)
   const hiddenCount = hiddenEmployers.data?.length ?? 0
 
   // the card walks the list it was opened from; a vacancy that left the list (skipped, hidden) keeps its place
@@ -284,14 +314,29 @@ export default function VacanciesPage() {
     set({ group: g })
     setChecked([])
   }
-  const shown = list.data
+  const shownBase = list.data
     ? narrowed && groupCount(filters.group) !== undefined && total < (groupCount(filters.group) ?? 0)
       ? `Показано ${total.toLocaleString('ru-RU')} из ${groupCount(filters.group)!.toLocaleString('ru-RU')}`
       : countOf(total, ['вакансия', 'вакансии', 'вакансий'])
     : null
+  const shown = shownBase ? [shownBase, ...(stale > 0 ? [staleText(stale)] : []), ...(capped > 0 ? [cappedText(capped)] : [])].join(' · ') : null
+  const scopeEmptied = scopeEmpty({ stale, capped, days: freshDays(filters), cap, homeAreas })
   const listError = list.error ? <ErrorNotice className="m-4" error={list.error} title="Не удалось загрузить вакансии" onRetry={() => void list.refetch()} /> : null
   const emptyState =
-    list.data && items.length === 0 ? (
+    list.data && items.length === 0 && (stale > 0 || capped > 0) && !narrowed ? (
+      // only the standing filters emptied the group: say so and offer what they hide
+      <EmptyState
+        title={scopeEmptied.title}
+        action={
+          <div className="flex flex-wrap gap-2">
+            {stale > 0 && <Button onClick={() => set({ fresh_days: '' })}>Показать старые</Button>}
+            {capped > 0 && <Button onClick={() => set({ max_responses: '' })}>Показать с любым числом откликов</Button>}
+          </div>
+        }
+      >
+        {scopeEmptied.text}
+      </EmptyState>
+    ) : list.data && items.length === 0 ? (
       <EmptyState
         title={narrowed ? 'Ничего не найдено' : (EMPTY_TEXT[filters.group]?.[0] ?? 'Здесь пусто')}
         action={
@@ -477,12 +522,13 @@ export default function VacanciesPage() {
             set={set}
             onGroup={selectGroup}
             onReset={() => replaceFilters(clearFilters(filters))}
-            canReset={narrowed}
+            canReset={canReset}
             count={groupCount}
             searches={searches.data ?? []}
             sets={sets.data?.items ?? []}
             snoozed={counts?.snoozed ?? 0}
             summary={shown}
+            homeAreas={homeAreas}
           />
           <ClassicTable
             items={items}
@@ -543,7 +589,17 @@ export default function VacanciesPage() {
         ) : (
           <div className="flex flex-wrap items-center gap-2 py-3">
             <SearchInput label="Поиск по названию или компании" placeholder="Название или компания" value={filters.q} onChange={(q) => set({ q })} />
-            <FiltersPopover filters={filters} set={set} onReset={() => replaceFilters(clearFilters(filters))} active={chips.length} searches={searches.data ?? []} sets={sets.data?.items ?? []} snoozed={counts?.snoozed ?? 0} />
+            <FiltersPopover
+              filters={filters}
+              set={set}
+              onReset={() => replaceFilters(clearFilters(filters))}
+              canReset={canReset}
+              active={chips.length}
+              searches={searches.data ?? []}
+              sets={sets.data?.items ?? []}
+              snoozed={counts?.snoozed ?? 0}
+              homeAreas={homeAreas}
+            />
             <Menu
               label="Сортировка"
               align="start"
@@ -566,13 +622,15 @@ export default function VacanciesPage() {
         {chips.length > 0 && (
           <div className="flex flex-wrap items-center gap-1.5 pb-3" aria-label="Действующие фильтры">
             {chips.map((c) => (
-              <Chip key={c.key} onRemove={() => replaceFilters(c.clear(filters))} removeLabel={`Убрать фильтр «${c.label}»`}>
+              <Chip key={c.key} title={c.title} onRemove={() => replaceFilters(c.clear(filters))} removeLabel={`Убрать фильтр «${c.label}»`}>
                 {c.label}
               </Chip>
             ))}
-            <Button variant="ghost" size="sm" onClick={() => replaceFilters(clearFilters(filters))}>
-              Сбросить все
-            </Button>
+            {canReset && (
+              <Button variant="ghost" size="sm" onClick={() => replaceFilters(clearFilters(filters))}>
+                Сбросить все
+              </Button>
+            )}
           </div>
         )}
 
@@ -825,18 +883,22 @@ function FiltersPopover({
   filters,
   set,
   onReset,
+  canReset,
   active,
   searches,
   sets,
   snoozed,
+  homeAreas,
 }: {
   filters: Filters
   set: (patch: Partial<Filters>) => void
   onReset: () => void
+  canReset: boolean
   active: number
   searches: SavedSearch[]
   sets: SelectionProfile[]
   snoozed: number
+  homeAreas?: string[]
 }) {
   const chosen = filters.experience.split(',').filter(Boolean)
   const scoreOptions: [string, string][] = SCORE_PRESETS.map((s) => [s, s ? `от ${s}` : 'Любая'])
@@ -857,7 +919,7 @@ function FiltersPopover({
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="text-[15px] font-semibold">Фильтры</h2>
-            {active > 0 && (
+            {canReset && (
               <Button variant="ghost" size="sm" onClick={onReset}>
                 Сбросить
               </Button>
@@ -905,6 +967,13 @@ function FiltersPopover({
                   />
                 </Field>
               </div>
+              <Group label="Срок публикации" hint={freshHint(homeAreas)}>
+                <Checkbox
+                  label={freshLabel(freshDays(filters), homeAreas)}
+                  checked={Boolean(filters.fresh_days)}
+                  onChange={(e) => set({ fresh_days: e.target.checked ? String(FRESH_DAYS) : '' })}
+                />
+              </Group>
             </div>
             <div className="space-y-4">
               <Group label="Формат работы">
@@ -925,6 +994,9 @@ function FiltersPopover({
               <Group label="Оценка">
                 <Segmented label="Оценка" options={scoreOptions} value={filters.min_score} onChange={(v) => set({ min_score: v })} />
               </Group>
+              <Field label="Откликов до" hint={responsesHint(filters.max_responses ? Number(filters.max_responses) : null)}>
+                <ResponsesCapInput aria-label="Откликов до" value={filters.max_responses} onChange={(cap) => set({ max_responses: cap })} className="w-32" />
+              </Field>
             </div>
           </div>
           <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-3">
