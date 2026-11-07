@@ -139,10 +139,11 @@ async def freshness(session: AsyncSession, days: int | None) -> Freshness | None
 # ---- the responses cap of the tabs --------------------------------------------------------------------------------
 # A vacancy with a thousand responses means heavy competition: the user may keep only those with up to N responses.
 # Off by default, the user sets the number; then it works like the freshness filter: every group but the response
-# stages (RESPONSE_STATUSES), the counters of the tabs and of the menu follow it. The number is hh `counters.responses`
-# from the search results — the full card has no counters: the scan takes it when the vacancy comes in them (found, or
-# raised by the employer), and the job `responses` re-reads the results of the enabled searches for the last days
-# (services/responses_refresh.py). A vacancy without it stays (unknown is not «many»).
+# stages (RESPONSE_STATUSES), the counters of the tabs and of the menu follow it. The number is hh `counters.responses`,
+# given only in search results (the full card has no counters): the scan takes it when the vacancy is found or raised,
+# and the job `responses` (services/responses_refresh.py) re-reads the results of the enabled searches for the last
+# days every few hours, so a vacancy older than that keeps the number of its last appearance; a vacancy without it
+# stays (unknown is not «many»).
 RESPONSES_CAP_MAX = 999_999
 
 
