@@ -23,12 +23,15 @@ from app.hirehi.parse import (
     LayoutChanged,
     ListingItem,
     card_path,
+    company_query,
     hh_employer_id,
     item_reason,
     parse_card,
     parse_format,
     parse_listing,
     parse_salary,
+    same_employer,
+    title_scores,
     title_similarity,
     vacancy_data,
 )
@@ -368,6 +371,43 @@ def test_titles_of_the_two_sites_compare_by_their_words() -> None:
     assert title_similarity("Senior Python developer", "Python-разработчик") == 1.0
     assert title_similarity("Коммерческий директор маркетплейсов", "Бухгалтер") == 0.0
     assert title_similarity("anything", "") == 0.0
+
+
+def test_titles_compare_without_the_brackets_and_the_grade_of_hh() -> None:
+    """HireHi drops the brackets and the grade of an hh.ru title and turns a lead into a head: four titles that
+    the share of the whole title missed (0.57, 0.50, 0.40, 0.25) are found."""
+    payment = "Backend Developer (Middle / Middle+, Python) — Payment Systems"
+    assert title_similarity("Backend developer in payment systems", payment) == 1.0
+    assert title_similarity("Python developer of the billing platform", "Python Developer (Middle / Senior)") == 1.0
+    assert title_similarity("Frontend developer", "Frontend Developer (Mobile & Web Platforms)") == 1.0
+    assert title_similarity("Head of QA", "QA Lead (Mobile Apps)") == 1.0
+    assert title_similarity("Core backend engineer (go) in logistics", "Senior Core Backend Engineer (Go)") == 1.0
+    assert title_similarity("Аналитик данных", "Старший аналитик данных [удалённо]") == 1.0
+    # another vacancy of the same employer stays below TITLE_MATCH (0.6)
+    assert title_similarity("Frontend developer", "Оператор контактного центра / Менеджер поддержки") < 0.6
+    assert title_similarity("Core backend engineer (go) in logistics", "QA Engineer (manual / automation)") < 0.6
+    assert title_similarity("Head of QA", "Head of Media Buying") < 0.6
+    assert title_similarity("Head of QA automation in fintech", "Тестировщик интерфейсов") < 0.6
+    # nothing but brackets and the grade: the whole title decides
+    assert title_scores("Python developer", "Senior (Python)") == (0.5, 0.5)
+    # the share of the whole title tells two candidates of the same score apart
+    assert title_scores("Python developer in billing", "Python Developer") == (1.0, 1.0)
+    assert title_scores("Python developer in billing", "Python Developer (Senior)") == (1.0, pytest.approx(2 / 3))
+
+
+def test_the_employer_of_hh_holds_the_name_hirehi_gives() -> None:
+    """HireHi shortens the name of an employer: the hh.ru one holds it as whole words, either way round."""
+    assert same_employer("Звезда", "Онлайн-школа Звезда")
+    assert same_employer("Онлайн-школа Звезда", "Звезда")
+    assert same_employer("Восход", "ВОСХОД") and same_employer("Восход", "Восход, группа компаний")
+    assert same_employer("Ёлка", "ООО «Елка»") and same_employer("Сайт.ру", "Сайт.ру")
+    assert not same_employer("Восход", "Восходящий") and not same_employer("Звезда", "Звездарий")
+    assert not same_employer(None, "Звезда") and not same_employer("Звезда", " ")
+    assert not same_employer("—", "Звезда — онлайн-школа")
+    assert company_query("Звезда") == '"Звезда"'
+    assert company_query(" «Рога и копыта» ") == '"Рога и копыта"'
+    assert company_query('Say "Hi"*') == '"Say Hi"'
+    assert company_query(None) == "" and company_query(' "" ') == ""
 
 
 def test_listing_dates_far_in_the_past_parse_too() -> None:
