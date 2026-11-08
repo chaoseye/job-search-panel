@@ -5,7 +5,7 @@ import { apiGet, apiPut } from '../../api/client'
 import type { BoardColumnKey, BoardItem, VacancyDetail } from '../../api/types'
 import { ago, manualJournal, outcomeBadge, primaryAction, sendBlock, stageText } from '../../lib/board'
 import { formatDateTime } from '../../lib/format'
-import { formatsShort, salaryNet, UNAVAILABLE_HINT } from '../../lib/vacancyView'
+import { formatsShort, isHireHi, salaryNet, siteOf, unavailableHint } from '../../lib/vacancyView'
 import { Badge } from '../ui/Badge'
 import { Button, buttonClass } from '../ui/Button'
 import { Textarea } from '../ui/Field'
@@ -60,6 +60,11 @@ export default function VacancyRow({
     outcome && (
       <Badge key="outcome" tone={outcome.tone}>
         {outcome.label}
+      </Badge>
+    ),
+    isHireHi(v) && (
+      <Badge key="hirehi" tone="info" title="Вакансия с HireHi: отклик — на её странице на HireHi">
+        HireHi
       </Badge>
     ),
     item.application?.dry_run && (
@@ -128,7 +133,7 @@ function RowDetails({ colKey, item, mode, pending, actions }: { colKey: BoardCol
             <Button size="sm" disabled={pending} onClick={() => actions.notSent(item)}>
               Не отправил
             </Button>
-            <Button size="sm" disabled={pending} onClick={() => actions.unavailable(item)} title={UNAVAILABLE_HINT}>
+            <Button size="sm" disabled={pending} onClick={() => actions.unavailable(item)} title={unavailableHint(siteOf(item.vacancy))}>
               <EyeOff aria-hidden />
               Вакансия недоступна
             </Button>
@@ -161,7 +166,7 @@ function RowDetails({ colKey, item, mode, pending, actions }: { colKey: BoardCol
         )}
         {v.alternate_url && (
           <a className={buttonClass('ghost', 'sm')} href={v.alternate_url} target="_blank" rel="noreferrer">
-            hh.ru
+            {siteOf(v)}
             <ExternalLink aria-hidden />
           </a>
         )}

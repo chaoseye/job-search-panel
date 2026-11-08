@@ -57,6 +57,8 @@ async def check_closed(runtime: Any, *, stale_days: int | None = None, limit: in
                 await session.execute(
                     select(Vacancy)
                     .where(
+                        # a HireHi vacancy has no hh.ru number: HireHi checks its own (services/hirehi.check_closed)
+                        Vacancy.source == "hh",
                         Vacancy.pipeline_status.in_(CHECK_STATUSES),
                         Vacancy.archived.is_(False),
                         Vacancy.hidden.is_(False),
@@ -103,20 +105,24 @@ async def check_closed(runtime: Any, *, stale_days: int | None = None, limit: in
             row.last_seen_at = now
             summary["refreshed"] += 1
         await release_writes(session)
-        summary["responses_cancelled"] = await cancel_unconfirmed(session, now)
+        summary["responses_cancelled"] = await cancel_unconfirmed(session, now, source="hh")
         await session.commit()
     if summary["closed"] or summary["responses_cancelled"]:
         log.info("freshness_closed", **summary)
     return summary
 
 
-async def cancel_unconfirmed(session: AsyncSession, now: datetime) -> int:
-    """Cancels the responses of the vacancies closed on hh.ru (archived and `filtered_out`: this check or the scan
+async def cancel_unconfirmed(session: AsyncSession, now: datetime, *, source: str = "hh") -> int:
+    """Cancels the responses of the vacancies closed on their site (archived and `filtered_out`: this check or the scan
     closed them, tonight or on an earlier night) that have waited for «Да, отправлено» longer than
     UNCONFIRMED_GRACE_DAYS — the open page of the assistant and the API queue. A closed vacancy the user brought back
     («Вернуть») is no longer `filtered_out` and keeps its response; one without `queued_at` (old rows) counts as long
-    waiting. Returns how many were cancelled."""
+    waiting. Each source cancels its own: hh.ru from this check, HireHi from its check (services/hirehi.check_closed),
+    with the same grace. Returns how many were cancelled."""
+    from app.services.sources import source_label
+
     cutoff = now - timedelta(days=UNCONFIRMED_GRACE_DAYS)
+    site = source_label(source)
     rows = (
         (
             await session.execute(
@@ -124,6 +130,7 @@ async def cancel_unconfirmed(session: AsyncSession, now: datetime) -> int:
                 .join(Vacancy, Vacancy.id == Application.vacancy_id)
                 .where(
                     Application.status.in_(OPEN_RESPONSE_STATUSES),
+                    Vacancy.source == source,
                     Vacancy.archived.is_(True),
                     Vacancy.pipeline_status == "filtered_out",
                     or_(Application.queued_at.is_(None), Application.queued_at < cutoff),
@@ -138,8 +145,8 @@ async def cancel_unconfirmed(session: AsyncSession, now: datetime) -> int:
         await cancel_response(
             session,
             app_row,
-            error_text=UNCONFIRMED_ERROR,
-            why="вакансия закрыта на hh.ru, отправку так и не подтвердили",
+            error_text=UNCONFIRMED_ERROR if source == "hh" else UNCONFIRMED_ERROR.replace("hh.ru", site),
+            why=f"вакансия закрыта на {site}, отправку так и не подтвердили",
         )
     return len(rows)
 

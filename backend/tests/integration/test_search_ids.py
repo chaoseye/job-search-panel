@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 from alembic import command
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session
 
 from app.config import Settings
@@ -104,9 +104,19 @@ def test_migration_keeps_the_searches_and_starts_past_every_referenced_id(
                     last_error="HTTP 500" if i == 2 else None,
                 )
             )
-        for n, ids in enumerate(references):
-            session.add(Vacancy(hh_id=str(100 + n), name=f"Вакансия {n}", source_search_ids=ids))
         session.commit()
+    # the vacancies by plain SQL: the model has columns of later revisions (0032: source)
+    with engine.begin() as conn:
+        for n, ids in enumerate(references):
+            conn.execute(
+                text(
+                    "insert into vacancies (hh_id, name, source_search_ids, pipeline_status, first_seen_at, "
+                    "created_at, updated_at, archived, response_letter_required, has_test, full_fetch_errors, "
+                    "hidden, user_override, claude_attempts) values (:hh, :name, :ids, 'new', :now, :now, :now, "
+                    "0, 0, 0, 0, 0, 0, 0)"
+                ),
+                {"hh": str(100 + n), "name": f"Вакансия {n}", "ids": ids, "now": "2026-09-25 10:00:00"},
+            )
     engine.dispose()
     con = sqlite3.connect(settings.db_path)  # type: ignore[arg-type]
     assert "AUTOINCREMENT" not in _table_sql(con).upper()

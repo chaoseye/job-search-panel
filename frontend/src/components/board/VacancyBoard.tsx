@@ -283,7 +283,7 @@ export default function VacancyBoard() {
                 n.clarify > 0 && tile('clarify', 'Письмо ждёт уточнения', n.clarify, { tone: 'warn' }),
                 tile('low', `Ниже ${t.maybe}, скрыты`, n.low, { dashed: true }),
                 n.wait > 0 && tile('wait', 'Claude ещё разбирает', n.wait),
-                n.manual > 0 && tile('manual', 'Нужно действие на hh.ru', n.manual, { tone: 'warn' }),
+                n.manual > 0 && tile('manual', 'Нужно действие на сайте', n.manual, { tone: 'warn' }),
               ].filter((x): x is SummaryTile => Boolean(x))}
               startLabel="Разобрать новые"
               startBand={defaultBand(n)}
@@ -357,11 +357,12 @@ export default function VacancyBoard() {
           applyMode={mode}
           onClose={() => setVacancyCard(null)}
           onChanged={refresh}
-          onApply={(id) => {
+          onApply={(id, manual) => {
             const item = items.find((x) => x.vacancy.id === id) ?? b?.columns.flatMap((c) => c.items).find((x) => x.vacancy.id === id)
             setVacancyCard(null)
             if (!item) return
-            withConsent(() => (mode === 'api' ? setApiConfirm(item) : act.mutate({ kind: 'open', item })))
+            // a vacancy of HireHi has no API: its response is opened by hand in any mode
+            withConsent(() => (mode === 'api' && !manual ? setApiConfirm(item) : act.mutate({ kind: 'open', item })))
           }}
         />
       )}

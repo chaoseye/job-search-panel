@@ -9,6 +9,9 @@ function row(id: number, name: string, over: Partial<VacancyRow> = {}): VacancyR
   return {
     id,
     hh_id: String(1000 + id),
+    source: 'hh',
+    source_id: null,
+    source_label: 'hh.ru',
     name,
     employer: { id: '1', name: 'Компания', accredited_it: false, trusted: null },
     area_name: 'Москва',

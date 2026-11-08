@@ -33,14 +33,16 @@ JOB_LABELS: dict[str, str] = {
     "studios_find": "поиск студий",
     "studio_contacts": "контакты студий",
     "ws_tenders_sync": "проверка тендеров workspace.ru",
+    "hirehi_sync": "чтение HireHi",
     "mail_sync": "чтение писем hh.ru",
     "backup": "резервная копия",
     "probe": "зонд hh.ru",
 }
 # Jobs that rewrite the same vacancy rows and call hh.ru: at most one of them at a time, whoever starts them (tick,
 # button, criteria change). SQLite has one writer — a scan started by the button during a re-evaluation would fail
-# with «database is locked».
-EXCLUSIVE_GROUP = frozenset({"scan", "reprocess", "freshness", "sync", "responses"})
+# with «database is locked». The reading of HireHi writes the same table and asks hh.ru about the vacancies HireHi
+# took from it — it joins them.
+EXCLUSIVE_GROUP = frozenset({"scan", "reprocess", "freshness", "sync", "responses", "hirehi_sync"})
 # a job body that finished its loop but achieved nothing (every search failed, hh.ru demanded a captcha) returns its
 # stats with this key: the run is recorded as an error with the stats kept, and FAILURES_TO_NOTIFY such runs in a row
 # reach Telegram (`job_error`) — before, a scan against an unreachable hh.ru was «ok» forever

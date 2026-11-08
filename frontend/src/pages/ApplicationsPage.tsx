@@ -17,6 +17,7 @@ import { EmptyState, ErrorNotice, Notice, Skeleton } from '../components/ui/Stat
 import { SortTh, Table, Td, Th } from '../components/ui/Table'
 import { Tabs } from '../components/ui/Tabs'
 import { countOf, formatDateTime, relativeTime, shortAgo } from '../lib/format'
+import { isHireHi, siteOf } from '../lib/vacancyView'
 
 const PER_PAGE = 50
 
@@ -137,7 +138,7 @@ export default function ApplicationsPage() {
     if (a.letter_text || n || a.status === 'sent') out.push({ key: 'open', label: n ? 'Подробнее' : a.status === 'sent' ? 'Ответ работодателя' : 'Письмо', onSelect: () => setOpen(a) })
     if (a.negotiation_url) out.push({ key: 'neg', label: 'Отклик на hh.ru', href: a.negotiation_url })
     if (a.response_url) out.push({ key: 'ext', label: 'Сайт работодателя', href: a.response_url })
-    if (a.vacancy?.alternate_url) out.push({ key: 'vac', label: 'Вакансия на hh.ru', href: a.vacancy.alternate_url })
+    if (a.vacancy?.alternate_url) out.push({ key: 'vac', label: `Вакансия на ${siteOf(a.vacancy)}`, href: a.vacancy.alternate_url })
     const danger: MenuEntry[] = []
     if (a.status === 'queued' || a.status === 'needs_manual' || a.status === 'failed') danger.push({ key: 'cancel', label: 'Отменить', tone: 'danger', onSelect: () => act.mutate({ id: a.id, action: 'cancel' }) })
     if (a.status === 'sent' && a.hh_negotiation_id && !a.dry_run && a.mode === 'api')
@@ -286,7 +287,8 @@ export default function ApplicationsPage() {
           <Select aria-label="Способ отклика" wrapperClassName="w-auto" className="min-w-44" value={mode} onChange={(e) => setMode(e.target.value)}>
             <option value="">Любой способ</option>
             <option value="api">Через API</option>
-            <option value="assist">Вручную на hh.ru</option>
+            {/* «Ассистент» on hh.ru and the responses to HireHi vacancies, made by hand on their pages */}
+            <option value="assist">Вручную</option>
             <option value="external">Вне панели</option>
           </Select>
           <span className="flex items-center gap-1.5">
@@ -466,7 +468,7 @@ function StatusCell({ a }: { a: ApplicationRow }) {
       )}
       {n?.hh_updated_at && (
         <span className="text-xs tabular-nums text-ink-3" title={formatDateTime(n.hh_updated_at)}>
-          обновлён на hh.ru {relativeTime(n.hh_updated_at)}
+          обновлён{isHireHi(a.vacancy) ? '' : ' на hh.ru'} {relativeTime(n.hh_updated_at)}
         </span>
       )}
       {a.autopilot && <span className="text-xs text-ink-3">автопилот</span>}

@@ -38,6 +38,7 @@ from app.services.audit import audit
 from app.services.letters import add_letter, letter_from_result
 from app.services.profile import active_profile
 from app.services.relocate import local_path
+from app.services.sources import apply_url, vacancy_by_key, vacancy_url
 from app.services.state import get_hh_auth
 from app.services.tagging import clean_tags
 
@@ -192,7 +193,7 @@ async def _apply_item(
     if task_type == "tender_reply":
         await _finish_tender(session, settings, batch.batch_id, item, outcome)
         return
-    vacancy = (await session.execute(select(Vacancy).where(Vacancy.hh_id == item.vacancy_id))).scalar_one_or_none()
+    vacancy = await vacancy_by_key(session, item.vacancy_id)
     if vacancy is None:
         outcome.errors.append(f"{item.vacancy_id}: вакансия не найдена в базе")
         return
@@ -302,9 +303,11 @@ async def _apply_item(
             outcome.top.append(
                 {
                     "hh_id": vacancy.hh_id,
+                    "vacancy_id": vacancy.id,
+                    "source": vacancy.source,
                     "name": vacancy.name,
                     "employer": vacancy.employer_name,
-                    "url": vacancy.alternate_url,
+                    "url": vacancy_url(vacancy),
                     "score": ev.score,
                     "salary": vacancy.salary_net_rur,
                 }
@@ -384,10 +387,11 @@ def _letter_payload(
     return {
         "vacancy_id": vacancy.id,
         "hh_id": vacancy.hh_id,
+        "source": vacancy.source,
         "name": vacancy.name,
         "employer": vacancy.employer_name,
-        "url": vacancy.alternate_url,
-        "apply_url": vacancy.apply_alternate_url or vacancy.alternate_url,
+        "url": vacancy_url(vacancy),
+        "apply_url": apply_url(vacancy),
         "score": vacancy.score,
         "status": vacancy.pipeline_status,
         "salary": vacancy.salary_net_rur,
@@ -743,7 +747,7 @@ async def _import_file(session: AsyncSession, settings: Settings, path: Path) ->
             ).scalars():
                 adv.status, adv.batch_id = "queued", None
             continue
-        vacancy = (await session.execute(select(Vacancy).where(Vacancy.hh_id == hh_id))).scalar_one_or_none()
+        vacancy = await vacancy_by_key(session, hh_id)
         if vacancy is None:
             continue
         if task_type == "evaluate_and_letter" and vacancy.pipeline_status == "awaiting_claude":

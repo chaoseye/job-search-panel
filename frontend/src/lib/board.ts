@@ -3,6 +3,7 @@
 import type { ApplicationRow, BoardBand, BoardColumnKey, BoardFunnelStep, BoardItem, BoardNewCounts, VacancyDetail } from '../api/types'
 import type { BadgeTone } from '../components/ui/Badge'
 import { shortAgo } from './format'
+import { isHireHi, siteOf } from './vacancyView'
 
 export const COLUMN_KEYS: BoardColumnKey[] = ['new', 'confirm', 'sent', 'viewed', 'answer']
 export const BANDS: BoardBand[] = ['hi', 'mid', 'clarify', 'low', 'wait', 'manual']
@@ -38,7 +39,7 @@ export function bandLabel(band: BoardBand, t: Thresholds): string {
     case 'wait':
       return 'Ждут оценки Claude'
     case 'manual':
-      return 'Нужно действие на hh.ru'
+      return 'Нужно действие на сайте'
   }
 }
 
@@ -160,7 +161,9 @@ export function primaryAction(key: BoardColumnKey, item: BoardItem, mode: 'api' 
   const app = item.application
   switch (key) {
     case 'new':
-      return mode === 'api' ? { action: 'queue', label: 'Откликнуться через API' } : { action: 'open', label: 'Открыть на hh.ru' }
+      // a vacancy of HireHi has no API: its page opens in any mode
+      if (mode === 'api' && !isHireHi(item.vacancy)) return { action: 'queue', label: 'Откликнуться через API' }
+      return { action: 'open', label: `Открыть на ${siteOf(item.vacancy)}` }
     case 'confirm':
       return app?.mode === 'assist' && app.status === 'needs_manual' ? { action: 'confirm', label: 'Да, отправлено' } : null
     case 'sent':
@@ -178,7 +181,7 @@ export function keyHint(key: BoardColumnKey, mode: 'api' | 'assist'): string {
   const tail = '← → колонки · Esc вся доска'
   switch (key) {
     case 'new':
-      return `${walk} · Enter: ${mode === 'api' ? 'откликнуться через API' : 'открыть на hh.ru'} · S пропустить · D отложить · ${tail}`
+      return `${walk} · Enter: ${mode === 'api' ? 'откликнуться через API' : 'открыть отклик'} · S пропустить · D отложить · ${tail}`
     case 'confirm':
       return `${walk} · Enter: да, отправлено · ${tail}`
     case 'sent':
@@ -190,7 +193,7 @@ export function keyHint(key: BoardColumnKey, mode: 'api' | 'assist'): string {
 
 const EMPTY: Record<BoardColumnKey, [string, string]> = {
   new: ['Решать нечего', 'Новые вакансии появятся после проверки поисков и разбора в Claude.'],
-  confirm: ['Подтверждать нечего', 'Здесь ждут отклики, которые вы открыли на hh.ru, но ещё не отметили отправленными.'],
+  confirm: ['Подтверждать нечего', 'Здесь ждут отклики, которые вы открыли на сайте вакансии, но ещё не отметили отправленными.'],
   sent: ['Все отклики просмотрены', 'Здесь лежат отправленные отклики, которые работодатель ещё не открыл.'],
   viewed: ['Пока никто не смотрел', 'Сюда попадают отклики, которые работодатель открыл, но ещё не ответил.'],
   answer: ['Ответов пока нет', 'Приглашения, отказы и сообщения работодателей будут здесь.'],
@@ -200,7 +203,7 @@ const EMPTY_BAND: Partial<Record<BoardBand, [string, string]>> = {
   clarify: ['Уточнять нечего', 'Во всех письмах, которые ещё могут уйти, нет вопросов к вам.'],
   low: ['Отклонённых нет', 'Здесь будут вакансии, которые Claude оценил ниже порога.'],
   wait: ['Очередь Claude пуста', 'Все найденные вакансии уже разобраны.'],
-  manual: ['Действий на hh.ru не нужно', 'Здесь будут вакансии, которым нужен шаг на сайте, пока отклик не открыт.'],
+  manual: ['Действий на сайтах не нужно', 'Здесь будут вакансии, которым нужен шаг на сайте, пока отклик не открыт.'],
 }
 
 /** What an empty open column says: the reason and what will come there. */

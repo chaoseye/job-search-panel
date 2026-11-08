@@ -245,10 +245,17 @@ def _money(value: Any) -> str:
     return f"{n:,}".replace(",", " ") + " ₽"
 
 
+def _source_mark(p: dict[str, Any]) -> str:
+    """« · HireHi» after a vacancy of HireHi (the user sees where the vacancy comes from); nothing for hh.ru."""
+    return " · HireHi" if p.get("source") == "hirehi" else ""
+
+
 def _vacancy_line(p: dict[str, Any], *, with_score: bool = False) -> str:
     parts = [link(p.get("url"), p.get("name") or "вакансия")]
     if p.get("employer"):
         parts.append("— " + esc(p["employer"]))
+    if _source_mark(p):
+        parts[-1] += _source_mark(p)
     extras = []
     if with_score and p.get("score") is not None:
         extras.append(f"оценка {esc(p['score'])}")
@@ -308,7 +315,7 @@ def render_event(
         seen: set[str] = set()
         top: list[dict[str, Any]] = []
         for item in items:
-            key = str(item.get("hh_id") or item.get("name"))
+            key = str(item.get("vacancy_id") or item.get("hh_id") or item.get("name"))
             if key in seen:
                 continue
             seen.add(key)
@@ -464,6 +471,7 @@ def render_event(
             line = link(p.get("url"), p.get("title") or "вакансия")
             if p.get("employer"):
                 line += f" — {esc(p['employer'])}"
+            line += _source_mark(p)
             extra = " · ".join(x for x in (_salary_text(p), _place_text(p)) if x)
             if extra:
                 line += f" · {esc(extra)}"
@@ -609,8 +617,10 @@ def render_letter(p: dict[str, Any]) -> str:
         head = f"✉️ <b>Письмо переработано</b> ({verdict.lower()}, {esc(score)})"
     else:
         head = f"✉️ <b>{verdict}</b> — оценка {esc(score)}"
-    vacancy = link(p.get("url"), p.get("name") or "вакансия") + (
-        f" — {esc(p['employer'])}" if p.get("employer") else ""
+    vacancy = (
+        link(p.get("url"), p.get("name") or "вакансия")
+        + (f" — {esc(p['employer'])}" if p.get("employer") else "")
+        + _source_mark(p)
     )
     lines = [f"{head}: {vacancy}"]
     facts = [x for x in (_money(p["salary"]) if p.get("salary") else "", p.get("work_format"), _place_text(p)) if x]

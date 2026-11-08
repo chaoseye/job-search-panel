@@ -16,6 +16,7 @@ from app.runtime import Runtime
 from app.services import applier as svc
 from app.services import manual_negotiation as manual
 from app.services.jobs import JobBusy
+from app.services.sources import apply_url
 from app.services.state import get_system_state
 
 router = APIRouter(prefix="/applications", tags=["applications"])
@@ -330,7 +331,8 @@ async def assist_open(
         _raise(exc)
     await session.commit()
     data = svc.application_row(row, vacancy)
-    data["apply_url"] = vacancy.apply_alternate_url or vacancy.alternate_url
+    data["apply_url"] = apply_url(vacancy)
+    data["source"] = vacancy.source
     return data
 
 

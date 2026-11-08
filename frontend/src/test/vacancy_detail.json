@@ -1,6 +1,9 @@
 {
   "id": 5,
   "hh_id": "555001",
+  "source": "hh",
+  "source_id": null,
+  "source_label": "hh.ru",
   "name": "Senior Python Developer (FastAPI)",
   "employer": {
     "id": "1455",
@@ -95,6 +98,7 @@
   "test_required": false,
   "type_id": "open",
   "response_url": null,
+  "source_apply_label": null,
   "full_fetched_at": "2026-09-23T22:40:30+00:00",
   "skip_reason": null,
   "question_answers": [],

@@ -27,6 +27,11 @@ RESPONSES_TICK_MIN = 15
 # RESPONSES_WAIT_SEC (less than the interval: ticks never overlap)
 RESPONSES_WAIT_SEC = 10 * 60
 RESPONSES_RETRY_SEC = 5
+# The reading of HireHi (job `hirehi_sync`, a job of the same group): the tick starts 7 minutes after the start of
+# the service, so with HIREHI_SYNC_MIN = 15 it falls on minute 7, 22, 37, 52 — never the second of a scan tick
+# (every 5) or of the responses tick (5, 20, 35, 50); a scan or a pass still running is waited for like the
+# responses tick waits (a tick of the group that tries once can lose every time)
+HIREHI_FIRST_TICK_MIN = 7
 
 
 async def auth_check(runtime: Runtime) -> None:
@@ -359,6 +364,27 @@ async def responses_tick(runtime: Runtime) -> None:
         waited += RESPONSES_RETRY_SEC
 
 
+async def hirehi_tick(runtime: Runtime) -> None:
+    """The reading of HireHi (job `hirehi_sync`) when a HireHi search is due (each at most once an hour) or the
+    daily check of closed ones; waits for a running job of the group like responses_tick, asking again whether
+    anything is due before every try."""
+    from app.services.hirehi import JOB, sync_due, sync_hirehi
+
+    waited = 0.0
+    while await sync_due(runtime):
+        try:
+            await runtime.jobs.start(JOB, lambda: sync_hirehi(runtime))
+            return
+        except JobBusy as exc:
+            if exc.running == JOB:
+                return
+            if waited >= RESPONSES_WAIT_SEC:
+                log.info("hirehi_tick_skipped_busy", running=exc.running, waited_sec=int(waited))
+                return
+        await asyncio.sleep(RESPONSES_RETRY_SEC)
+        waited += RESPONSES_RETRY_SEC
+
+
 async def mail_tick(runtime: Runtime) -> None:
     """hh.ru notification e-mails → manual journal (job `mail_sync`) every IMAP_SYNC_MIN minutes."""
     from app.services.mail_sync import sync_mail
@@ -594,6 +620,18 @@ def build_scheduler(runtime: Runtime) -> AsyncIOScheduler:
             max_instances=1,
             coalesce=True,
             replace_existing=True,
+        )
+    if runtime.settings.hirehi_sync_min > 0:
+        scheduler.add_job(
+            hirehi_tick,
+            "interval",
+            minutes=runtime.settings.hirehi_sync_min,
+            args=[runtime],
+            id="hirehi_sync",
+            max_instances=1,
+            coalesce=True,
+            replace_existing=True,
+            next_run_time=datetime.now(UTC) + timedelta(minutes=HIREHI_FIRST_TICK_MIN),
         )
     if runtime.settings.ws_tenders_sync_min > 0:
         scheduler.add_job(

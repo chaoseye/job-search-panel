@@ -40,6 +40,7 @@ import {
   freshHint,
   freshLabel,
   GROUP_LABEL,
+  isHireHi,
   MORE_GROUPS,
   PRIMARY_GROUPS,
   responsesHint,
@@ -355,7 +356,10 @@ export default function VacanciesPage() {
       </EmptyState>
     ) : null
   const layoutSwitch = !phone && <Segmented label="Вид страницы" options={LAYOUTS} value={layout} onChange={setLayout} />
-  const applyLabel = mode === 'api' ? `Откликнуться (${checked.length})` : `Открыть по очереди на hh.ru (${checked.length})`
+  // the pages open on their own sites: «на hh.ru» only while every chosen vacancy is of hh.ru
+  const checkedHireHi = (list.data?.items ?? []).some((v) => checked.includes(v.id) && isHireHi(v))
+  const applyLabel =
+    mode === 'api' ? `Откликнуться (${checked.length})` : checkedHireHi ? `Открыть по очереди (${checked.length})` : `Открыть по очереди на hh.ru (${checked.length})`
 
   return (
     <div className="flex flex-col gap-5">
@@ -680,9 +684,10 @@ export default function VacanciesPage() {
           onChanged={invalidate}
           applyMode={mode}
           position={position}
-          onApply={(id) =>
+          onApply={(id, manual) =>
             withConsent(() => {
-              if (mode === 'api') queueApply.mutate([id])
+              // a vacancy of HireHi has no API: its response is opened by hand in any mode
+              if (mode === 'api' && !manual) queueApply.mutate([id])
               else startAssist([id])
               setSelected(null)
             })
@@ -765,6 +770,11 @@ function VacancyListRow({ v, active, checked, onToggle, onOpen }: { v: VacancyRo
         >
           {v.name}
         </button>
+        {isHireHi(v) && (
+          <Badge tone="info" title="Вакансия с HireHi: отклик — на её странице на HireHi">
+            HireHi
+          </Badge>
+        )}
         {v.duplicate_of_id !== null && (
           <Badge tone="outline" title="Повторная публикация вакансии, которая уже есть в базе">
             дубль

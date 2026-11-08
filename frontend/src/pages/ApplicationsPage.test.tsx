@@ -126,4 +126,40 @@ describe('ApplicationsPage', () => {
     await waitFor(() => expect(screen.queryByRole('region', { name: 'Отклик на hh.ru' })).toBeNull())
     expect(api.requests.some((r) => r.path === '/api/applications/3/confirm')).toBe(false)
   })
+
+  it('opens the response to a HireHi vacancy on its page and says how it goes there', async () => {
+    vi.stubGlobal('open', vi.fn())
+    const page = 'https://hirehi.ru/vacancy/backend-engineer-7f3e2a'
+    const waiting = row(4, {
+      vacancy: { id: 4, hh_id: null, source: 'hirehi', name: 'Вакансия 4', employer_name: 'Рога и копыта', alternate_url: page, apply_alternate_url: page, pipeline_status: 'needs_manual', score: 70 },
+      mode_label: 'вручную на HireHi',
+      status: 'needs_manual',
+      status_label: 'нужно действие',
+      sent_at: null,
+      confirmed_by_user: false,
+      letter_text: 'Здравствуйте!',
+    })
+    stubApi({ ...STATUS, '/api/applications': { items: [waiting], total: 1, page: 0, per_page: 50, counts: {} } })
+    renderAt('/applications', '/applications', <ApplicationsPage />)
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Открыть и подтвердить' }))[0])
+    const panel = await screen.findByRole('region', { name: 'Отклик на HireHi' })
+    expect(within(panel).getByText(/^На HireHi нажмите «Отклик»/)).toBeInTheDocument()
+    expect(within(panel).getByRole('button', { name: 'Вакансия недоступна' })).toHaveAttribute('title', expect.stringMatching(/^HireHi пишет/))
+    expect(window.open).toHaveBeenCalledWith(page, '_blank', 'noopener')
+  })
+
+  it('keeps the journal of a HireHi response by hand and sends the answers nowhere near hh.ru', async () => {
+    const page = 'https://hirehi.ru/vacancy/backend-engineer-7f3e2a'
+    const sent = row(5, {
+      vacancy: { id: 5, hh_id: null, source: 'hirehi', name: 'Вакансия 5', employer_name: 'Рога и копыта', alternate_url: page, apply_alternate_url: page, pipeline_status: 'sent', score: 70 },
+      mode_label: 'вручную на HireHi',
+    })
+    stubApi({ ...STATUS, '/api/applications': { items: [sent], total: 1, page: 0, per_page: 50, counts: {} } })
+    renderAt('/applications', '/applications', <ApplicationsPage />)
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Вакансия 5' }))[0])
+    const sheet = await screen.findByRole('dialog', { name: 'Вакансия 5' })
+    expect(within(sheet).getByText(/^Отклик ушёл не через hh\.ru: работодатель ответит на своём сайте, в Telegram или на почту/)).toBeInTheDocument()
+    expect(within(sheet).queryByText(/то, что видите на hh\.ru/)).toBeNull()
+    expect(within(sheet).getByRole('combobox', { name: 'Статус отклика' })).toBeInTheDocument()
+  })
 })

@@ -84,7 +84,7 @@ def settings_for_letters(settings: Settings) -> Settings:
 # ---- the message -----------------------------------------------------------------------------
 
 
-def keyboard(vacancy_id: int, apply_url: str | None) -> dict[str, Any]:
+def keyboard(vacancy_id: int, apply_url: str | None, source: str | None = None) -> dict[str, Any]:
     rows: list[list[dict[str, str]]] = [
         [
             {"text": "✅ Да, отправлено", "callback_data": f"{CALLBACK_PREFIX}:{vacancy_id}:sent"},
@@ -93,7 +93,9 @@ def keyboard(vacancy_id: int, apply_url: str | None) -> dict[str, Any]:
         ]
     ]
     if apply_url:
-        rows.append([{"text": "Откликнуться на hh.ru", "url": apply_url}])
+        from app.services.sources import source_label
+
+        rows.append([{"text": f"Откликнуться на {source_label(source)}", "url": apply_url}])
     return {"inline_keyboard": rows}
 
 

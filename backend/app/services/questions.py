@@ -150,9 +150,9 @@ async def request_answers(
     from app.exchange.packets import PacketError, build_batches
 
     if row.archived:
-        from app.services.vacancies import BACK_BY_LINK, CLOSED_ON_HH  # services.vacancies imports this module
+        from app.services.vacancies import back_hint, closed_text  # services.vacancies imports this module
 
-        raise QuestionsError(f"{CLOSED_ON_HH}, ответы на вопросы формы не нужны. {BACK_BY_LINK}", 409)
+        raise QuestionsError(f"{closed_text(row)}, ответы на вопросы формы не нужны. {back_hint(row)}", 409)
     questions = parse_questions(text)
     if not questions:
         raise QuestionsError("Не нашёл вопросов: вставьте текст формы отклика, по вопросу на абзац", 422)

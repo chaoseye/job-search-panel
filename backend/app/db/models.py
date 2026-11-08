@@ -177,7 +177,9 @@ class Vacancy(TimestampMixin, Base):
     __tablename__ = "vacancies"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    hh_id: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
+    # the hh.ru number; None for a vacancy of another source (HireHi): whatever calls the hh.ru API by it must check
+    # `source` first (migration 0032)
+    hh_id: Mapped[str | None] = mapped_column(String(32), nullable=True, unique=True)
     name: Mapped[str] = mapped_column(String(500), nullable=False, default="")
     employer_id: Mapped[str | None] = mapped_column(String(32))
     employer_name: Mapped[str | None] = mapped_column(String(300))
@@ -245,6 +247,11 @@ class Vacancy(TimestampMixin, Base):
     # Claude failures in a row on this vacancy (result with `error`, without an evaluation or no result at all); at
     # importer.MAX_CLAUDE_ATTEMPTS it is parked in needs_manual instead of being re-packed forever
     claude_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    # where the vacancy lives (migration 0032): `hh` — hh.ru (`hh_id`), `hirehi` — hirehi.ru
+    # (`source_id` = its job id, `hh_id` None; services/hirehi.py). The tasks of hh.ru (full card, the nightly check of
+    # closed vacancies, the responses counter, negotiations, the apply queue) take only `hh`
+    source: Mapped[str] = mapped_column(String(16), nullable=False, default="hh", server_default="hh")
+    source_id: Mapped[str | None] = mapped_column(String(64))
     # The large text columns stay LAST in the table (migration 0021): a row was ~46 KB (~10 KB since 0022 dropped
     # `branded_description` from raw_full_json) and SQLite reads every column stored after them through a chain of
     # overflow pages. `add_column` appends to the end, i.e. after these — a migration adding a column filtered or
@@ -276,6 +283,8 @@ class Vacancy(TimestampMixin, Base):
             "responses_count",
         ),
         Index("ix_vacancies_first_seen", "first_seen_at", "rules_passed", "pipeline_status"),
+        # one vacancy per number of a source (hh rows keep NULL here — the unique hh_id guards them)
+        Index("ux_vacancies_source_id", "source", "source_id", unique=True),
     )
 
 

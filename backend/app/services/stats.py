@@ -52,6 +52,7 @@ from app.db.models import (
     VacancyEvaluation,
 )
 from app.services.counters import counters_between, sum_counters
+from app.services.sources import source_label
 
 CACHE_TTL_SEC = 60
 NO_ANSWER_DAYS = 7
@@ -216,6 +217,7 @@ class SentVacancy:
     prescore: int | None
     alternate_url: str | None
     source_search_ids: str | None
+    source: str = "hh"  # where the vacancy lives: hh | hirehi (migration 0032)
 
 
 @dataclass(frozen=True)
@@ -480,6 +482,8 @@ async def compute_stats(
             sent_rows, lambda r: (_loads(r.vacancy.work_format_names_json, []) if r.vacancy else []) or ["не указан"]
         ),
         "by_area": _breakdown(sent_rows, lambda r: [r.vacancy.area_name or "—"] if r.vacancy else ["—"], limit=15),
+        # hh.ru and HireHi: what each site gives
+        "by_source": _breakdown(sent_rows, lambda r: [source_label(r.vacancy.source)] if r.vacancy else ["—"]),
         "by_weekday_hour": _weekday_hour(sent_rows),
     }
 

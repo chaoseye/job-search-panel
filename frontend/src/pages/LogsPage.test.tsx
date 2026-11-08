@@ -8,6 +8,7 @@ const API = {
   '/api/jobs': { running: [], runs: [], last_scan_at: null, last_sync_at: null, paused_reason: null, failures: {} },
   '/api/audit': [],
   '/api/jobs/responses': { job_run_id: 7 },
+  '/api/jobs/hirehi': { job_run_id: 8 },
 }
 
 describe('LogsPage', () => {
@@ -23,5 +24,12 @@ describe('LogsPage', () => {
     renderAt('/logs', '/logs', <LogsPage />)
     await waitFor(() => expect(screen.getByRole('button', { name: 'Обновить число откликов' })).toBeDisabled())
     expect(screen.getByRole('button', { name: 'Проверить закрытые' })).toBeEnabled()
+  })
+
+  it('reads HireHi from «Запустить сейчас»', async () => {
+    const api = stubApi(API)
+    renderAt('/logs', '/logs', <LogsPage />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Прочитать HireHi' }))
+    await waitFor(() => expect(api.requests.some((r) => r.path === '/api/jobs/hirehi' && r.method === 'POST')).toBe(true))
   })
 })

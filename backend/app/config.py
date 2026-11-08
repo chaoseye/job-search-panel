@@ -62,6 +62,9 @@ _NON_NEGATIVE = (
     "sites_sync_min",
     "ws_tenders_sync_min",
     "ws_tenders_details_per_run",
+    "hirehi_sync_min",
+    "hirehi_cards_per_run",
+    "hirehi_check_per_run",
 )
 
 
@@ -238,6 +241,13 @@ class Settings(BaseSettings):
     # profile go to the bot (event ws_tender); 0 = only by the button. Tender cards read at most per run
     ws_tenders_sync_min: int = 60
     ws_tenders_details_per_run: int = 30
+    # hirehi.ru — the second source of «Вакансии» (services/hirehi.py): the tick looks every N
+    # minutes whether a HireHi search is due (each is read at most once an hour) or the daily check of closed ones;
+    # 0 = only by the button. Vacancy cards read per run at most (the new vacancies that passed the rules on the
+    # listing data; the rest wait for the next run) and cards re-read by the daily check of closed ones at most
+    hirehi_sync_min: int = 15
+    hirehi_cards_per_run: int = 30
+    hirehi_check_per_run: int = 40
 
     # A value the scheduler or the limits cannot use is refused at start instead of silently becoming a default
     # («25:00-21:00» used to take /api/applications/status down with a 500; maybe > suitable made «maybe» unreachable)

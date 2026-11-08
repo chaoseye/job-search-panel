@@ -241,11 +241,60 @@ export interface SearchParams {
   period_days: number | null
 }
 
+/** A search of HireHi: the filters of the site go to the address of its listing page, the words
+ *  are checked by the panel in the title (backend app/hirehi/parse.HireHiParams). */
+export interface HireHiParams {
+  /** a category or a subcategory of the site; with a city — a category only */
+  section: string
+  city: string
+  formats: string[]
+  levels: string[]
+  keywords: string[]
+}
+
+export interface HireHiOptions {
+  categories: Option[]
+  subcategories: Option[]
+  cities: Option[]
+  formats: Option[]
+  levels: Option[]
+  min_interval: number
+  /** HireHi refused the panel (a browser check, 403, 429): no reading until then */
+  state: { blocked_until: string | null; reason: string | null; checked_at: string | null }
+}
+
+export interface HireHiPreviewItem {
+  id: string
+  name: string
+  employer_name: string | null
+  format: string | null
+  level: string | null
+  category: string | null
+  salary: string | null
+  published_at: string | null
+  alternate_url: string | null
+  /** why the panel's filters drop it, null when the search takes it */
+  reason: string | null
+}
+
+export interface HireHiPreview {
+  found: number | null
+  page: number
+  has_more: boolean
+  url: string
+  matched: number
+  items: HireHiPreviewItem[]
+}
+
+export type SearchSource = 'search' | 'similar_to_resume' | 'hirehi'
+
 export interface SavedSearch {
   id: number
   name: string
-  source: 'search' | 'similar_to_resume'
+  source: SearchSource
   params: SearchParams
+  /** the filters of a HireHi search (source = hirehi), null for hh.ru */
+  hirehi: HireHiParams | null
   summary: string
   interval_min: number
   enabled: boolean
@@ -265,8 +314,9 @@ export interface SavedSearch {
 
 export interface SearchInput {
   name: string
-  source: 'search' | 'similar_to_resume'
+  source: SearchSource
   params: SearchParams
+  hirehi?: HireHiParams
   interval_min: number
   enabled: boolean
   watch_only?: boolean
@@ -328,9 +378,18 @@ export interface PreviewResult {
   }[]
 }
 
+/** Where a vacancy lives: hh.ru or HireHi. */
+export type VacancySource = 'hh' | 'hirehi'
+
 export interface VacancyRow {
   id: number
-  hh_id: string
+  /** the hh.ru number; null for a HireHi vacancy */
+  hh_id: string | null
+  source: VacancySource
+  /** its number on its site (the HireHi job id), null for hh.ru */
+  source_id: string | null
+  /** «hh.ru» | «HireHi» */
+  source_label: string
   name: string
   employer: { id: string | null; name: string | null; accredited_it: boolean | null; trusted: boolean | null }
   area_name: string | null
@@ -551,6 +610,8 @@ export interface VacancyDetail extends VacancyRow {
   test_required: boolean | null
   type_id: string | null
   response_url: string | null
+  /** the apply button of the HireHi card («Отклик на hh», «Отклик»): where the response goes; null for hh.ru */
+  source_apply_label: string | null
   full_fetched_at: string | null
   skip_reason: string | null
   history: { ts: string | null; level: string; area: string; message: string }[]
@@ -618,7 +679,8 @@ export interface ApplicationRow {
   vacancy_id: number
   vacancy: {
     id: number
-    hh_id: string
+    hh_id: string | null
+    source?: VacancySource
     name: string
     employer_name: string | null
     alternate_url: string | null
@@ -645,6 +707,8 @@ export interface ApplicationRow {
   autopilot: boolean
   created_at: string | null
   apply_url?: string | null
+  /** the site of the vacancy (the answer of «assist/open») */
+  source?: VacancySource
   negotiation: NegotiationView | null
 }
 
@@ -929,6 +993,8 @@ export interface StatsView {
     by_salary: BreakdownRow[]
     by_work_format: BreakdownRow[]
     by_area: BreakdownRow[]
+    /** hh.ru and HireHi */
+    by_source?: BreakdownRow[]
     by_weekday_hour: {
       cells: { weekday: number; hour: number; sent: number; invited: number }[]
       by_weekday: { weekday: number; label: string; sent: number; invited: number }[]
