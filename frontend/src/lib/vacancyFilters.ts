@@ -39,6 +39,27 @@ export interface Filters {
   /** The responses cap: only vacancies with at most so many responses on hh.ru; '' — off, the default (the user sets
    *  the number). */
   max_responses: string
+  /** The site of the vacancy (after HireHi became the second source): '' — every site, `hh`, `hirehi`. Kept
+   *  with the other filters and shown in the address too (?source=hirehi): a link with it opens the list of that site. */
+  source: string
+}
+
+/** The sites of the filter «Сайт», '' — all of them; the values are `source` of the API. */
+export const SITES: [string, string][] = [
+  ['', 'Все сайты'],
+  ['hh', 'hh.ru'],
+  ['hirehi', 'HireHi'],
+]
+
+export function isSite(value: unknown): value is string {
+  return typeof value === 'string' && value !== '' && SITES.some(([id]) => id === value)
+}
+
+/** The filters with the site a link names (/vacancies?source=hirehi): it wins over the saved one; an unknown value is
+ *  ignored (the API would answer 422). */
+export function withSiteFrom(f: Filters, params: Pick<URLSearchParams, 'get'>): Filters {
+  const site = params.get('source')
+  return isSite(site) && site !== f.source ? { ...f, source: site } : f
 }
 
 /** The days of the freshness filter: a vacancy outside the cities of the questionnaire stays on the list so long after
@@ -60,6 +81,7 @@ export const DEFAULT_FILTERS: Filters = {
   sort: 'score',
   fresh_days: String(FRESH_DAYS),
   max_responses: '',
+  source: '',
 }
 
 export const FILTERS_KEY = 'vacancies.filters'
@@ -92,6 +114,8 @@ export function savedFilterOk(key: string, value: unknown): boolean {
   if (key === 'fresh_days') return /^(?:|[1-9]\d{0,2})$/.test(value as string) && Number(value || 0) <= 365
   // 0–999 999 responses or '' (off), as the field types it (no leading zeros): the API takes no more
   if (key === 'max_responses') return /^(?:|0|[1-9]\d{0,5})$/.test(value as string)
+  // a site the API knows or '' (every site): «hh.ru» or «HireHi» would be a 422
+  if (key === 'source') return SITES.some(([id]) => id === value)
   return true
 }
 

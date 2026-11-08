@@ -82,8 +82,8 @@ async def test_large_columns_are_last_and_indexes_exist(runtime: Runtime) -> Non
     con = sqlite3.connect(db)
     listing = [r[2] for r in con.execute("pragma index_info(ix_vacancies_listing)")]
     con.close()
-    # 0030: the freshness filter of the tabs; 0031: the responses cap
-    assert listing[-3:] == ["published_at", "area_name", "responses_count"], listing
+    # 0030: the freshness filter of the tabs; 0031: the responses cap; 0033: the filter «Сайт»
+    assert listing[-4:] == ["published_at", "area_name", "responses_count", "source"], listing
 
 
 def test_layout_migration_keeps_every_value(tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -177,6 +177,24 @@ async def test_hot_queries_run_from_covering_indexes(runtime: Runtime) -> None:
     assert len(totals) >= 3 and all("COVERING INDEX ix_vacancies_listing" in p for p in totals), capped
     grouped = [p for s, p in capped if "GROUP BY vacancies.pipeline_status" in s]
     assert grouped and "COVERING INDEX ix_vacancies_listing" in grouped[0], capped
+
+    # the filter «Сайт» (the site is in the index since 0033): the page and its counts of either site stay on the
+    # listing index and never take ux_vacancies_source_id — a plain `source = ?` did, and read the row of every vacancy
+    # of hh.ru for a page of candidates
+    async with runtime.session_factory() as session:
+        session.add_all([_vacancy(i, hh_id=None, source="hirehi", source_id=str(i)) for i in range(30, 33)])
+        await session.commit()
+    for source in ("hh", "hirehi"):
+        for group in ("candidates", "all"):
+            site = await _plans(
+                runtime,
+                lambda s, g=group, src=source: vs.list_vacancies(s, group=g, source=src, fresh_days=5),
+            )
+            page = [p for s, p in site if s.startswith("SELECT vacancies.id FROM vacancies") and "LIMIT" in s]
+            assert page and "COVERING INDEX ix_vacancies_listing" in page[0], (source, group, site)
+            totals = [p for s, p in site if s.startswith("SELECT count(vacancies.id) AS count_1 FROM vacancies WHERE")]
+            assert len(totals) >= 2 and all("COVERING INDEX ix_vacancies_listing" in p for p in totals), site
+            assert not [p for _s, p in site if "ux_vacancies_source_id" in p], site
 
     statistics = await _plans(
         runtime, lambda s: st.compute_stats(s, runtime.settings, period_key="30d", use_cache=False)

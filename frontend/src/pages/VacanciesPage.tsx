@@ -27,7 +27,7 @@ import { EmptyState, ErrorNotice, Notice, Skeleton } from '../components/ui/Stat
 import { Tabs } from '../components/ui/Tabs'
 import { useMediaQuery } from '../components/ui/useMediaQuery'
 import { countOf, formatDateTime, plural, relativeTime, shortAgo, shortDate } from '../lib/format'
-import { FILTERS_KEY, FRESH_DAYS, isGroup, LAYOUT_KEY, loadFilters, loadLayout, scopeQuery, type Filters, type VacancyLayout } from '../lib/vacancyFilters'
+import { FILTERS_KEY, FRESH_DAYS, isGroup, LAYOUT_KEY, loadFilters, loadLayout, scopeQuery, SITES, withSiteFrom, type Filters, type VacancyLayout } from '../lib/vacancyFilters'
 import {
   canResetFilters,
   cappedText,
@@ -49,6 +49,7 @@ import {
   salaryNet,
   salaryPublished,
   scopeEmpty,
+  SITE_HINT,
   SORTS,
   staleText,
   WORK_FORMATS,
@@ -74,7 +75,11 @@ const EMPTY_TEXT: Record<string, [string, string]> = {
  *  side sheet, the data and the actions are the same in both. */
 export default function VacanciesPage() {
   const qc = useQueryClient()
-  const [filters, setFilters] = useState<Filters>(loadFilters)
+  // /vacancies?open=<id> (links from «Аналитика») opens the card right away; ?group=<id> (the dashboard block
+  // «Письма ждут уточнений») switches the tab to that group; ?source=<site> is the filter «Сайт»: a link with it opens
+  // the list of that site, and the address keeps it while the filter is on (below)
+  const [urlParams, setUrlParams] = useSearchParams()
+  const [filters, setFilters] = useState<Filters>(() => withSiteFrom(loadFilters(), urlParams))
   const [layout, setLayout] = useState<VacancyLayout>(loadLayout)
   // the classic table needs width: a phone keeps the compact view and the choice waits for a wider screen
   const phone = useMediaQuery('(max-width: 767px)')
@@ -82,9 +87,6 @@ export default function VacanciesPage() {
   const [page, setPage] = useState(0)
   const [selected, setSelected] = useState<number | null>(null)
   const [checked, setChecked] = useState<number[]>([])
-  // /vacancies?open=<id> (links from «Аналитика») opens the card right away; ?group=<id> (the dashboard block
-  // «Письма ждут уточнений») switches the tab to that group
-  const [urlParams, setUrlParams] = useSearchParams()
   useEffect(() => {
     const open = urlParams.get('open')
     const group = urlParams.get('group')
@@ -99,6 +101,15 @@ export default function VacanciesPage() {
     setUrlParams(urlParams, { replace: true })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [urlParams])
+  // the address follows the filter «Сайт», like the saved filters do: a choice, a chip's cross and a reset change it in
+  // place (no new history entry), and the menu's plain /vacancies gets the site back while the filter is on
+  useEffect(() => {
+    if ((urlParams.get('source') ?? '') === filters.source) return
+    const next = new URLSearchParams(urlParams)
+    if (filters.source) next.set('source', filters.source)
+    else next.delete('source')
+    setUrlParams(next, { replace: true })
+  }, [filters.source, urlParams, setUrlParams])
   const [showConsent, setShowConsent] = useState<null | (() => void)>(null)
   const [assistQueue, setAssistQueue] = useState<number[]>([])
   const [assistCurrent, setAssistCurrent] = useState<ApplicationRow | null>(null)
@@ -135,6 +146,7 @@ export default function VacanciesPage() {
   params.set('group', filters.group)
   if (filters.min_score) params.set('min_score', filters.min_score)
   if (filters.search_id) params.set('search_id', filters.search_id)
+  if (filters.source) params.set('source', filters.source)
   if (filters.selection_profile_id) params.set('selection_profile_id', filters.selection_profile_id)
   if (filters.area) params.set('area', filters.area)
   if (filters.work_format) params.set('work_format', filters.work_format)
@@ -943,6 +955,16 @@ function FiltersPopover({
                   {searches.map((s) => (
                     <option key={s.id} value={s.id}>
                       {s.name}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+              <Field label="Сайт" hint={SITE_HINT}>
+                {/* the label alone names the list: the hint under it is not part of the name */}
+                <Select aria-label="Сайт" value={filters.source} onChange={(e) => set({ source: e.target.value })}>
+                  {SITES.map(([id, label]) => (
+                    <option key={id} value={id}>
+                      {label}
                     </option>
                   ))}
                 </Select>

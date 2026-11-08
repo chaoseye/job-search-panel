@@ -2,6 +2,7 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import type { VacancyCounts, VacancyRow } from '../api/types'
 import { FILTERS_KEY, LAYOUT_KEY } from '../lib/vacancyFilters'
+import { SITE_HINT } from '../lib/vacancyView'
 import detailFixture from '../test/vacancy_detail.json'
 import { renderAt, stubApi } from '../test/render'
 import VacanciesPage from './VacanciesPage'
@@ -294,6 +295,72 @@ describe('VacanciesPage', () => {
     await screen.findByRole('button', { name: 'Backend-инженер' })
     expect(screen.getAllByTitle(HIREHI_TITLE)).toHaveLength(1)
   })
+
+  it('picks the site in the filters popover, shows it in the address and resets it', async () => {
+    const api = stubApi({
+      '/api/vacancies/hidden-employers': [],
+      '/api/vacancies': { ...EMPTY_LIST, items: [HIREHI_ROW], total: 1, counts: counts({ candidates: 12, total: 30 }), fresh: FRESH },
+    })
+    renderAt('/vacancies', '/vacancies', <VacanciesPage />)
+    await waitFor(() => expect(listRequests(api.calls).length).toBeGreaterThan(0))
+    expect(listRequests(api.calls)[0].has('source')).toBe(false) // every site by default
+
+    fireEvent.click(screen.getByRole('button', { name: /^Фильтры/ }))
+    const site = await screen.findByLabelText('Сайт')
+    expect(within(site).getAllByRole('option').map((o) => o.textContent)).toEqual(['Все сайты', 'hh.ru', 'HireHi'])
+    expect(screen.getByText(SITE_HINT)).toBeInTheDocument()
+    fireEvent.change(site, { target: { value: 'hirehi' } })
+    await waitFor(() => expect(listRequests(api.calls).at(-1)!.get('source')).toBe('hirehi'))
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent(/^\/vacancies\?source=hirehi$/))
+    expect(JSON.parse(localStorage.getItem(FILTERS_KEY) ?? '{}').source).toBe('hirehi')
+    fireEvent.click(screen.getByRole('button', { name: 'Готово' }))
+
+    // it narrows the list like the search filter: a chip, and the count of the tab stays that of every site
+    const chip = await screen.findByText('Сайт: HireHi')
+    expect(chip.closest('[title]')).toHaveAttribute('title', SITE_HINT)
+    expect(screen.getByText('Показано 1 из 12')).toBeInTheDocument()
+
+    // «Сбросить все» takes it out of the list, the browser and the address
+    fireEvent.click(screen.getByRole('button', { name: 'Сбросить все' }))
+    await waitFor(() => expect(listRequests(api.calls).at(-1)!.has('source')).toBe(false))
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent(/^\/vacancies$/))
+    expect(JSON.parse(localStorage.getItem(FILTERS_KEY) ?? '{}').source).toBe('')
+    expect(screen.queryByText('Сайт: HireHi')).toBeNull()
+
+    // the chip's cross does the same
+    fireEvent.click(screen.getByRole('button', { name: /^Фильтры/ }))
+    fireEvent.change(await screen.findByLabelText('Сайт'), { target: { value: 'hh' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Готово' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Убрать фильтр «Сайт: hh.ru»' }))
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent(/^\/vacancies$/))
+    expect(listRequests(api.calls).at(-1)!.has('source')).toBe(false)
+  })
+
+  it('opens the list of the site a link names, keeps the saved site in the address and drops an unknown one', async () => {
+    localStorage.setItem(FILTERS_KEY, JSON.stringify({ source: 'hh' }))
+    let api = stubApi({ '/api/vacancies/hidden-employers': [], '/api/vacancies': EMPTY_LIST })
+    let view = renderAt('/vacancies?source=hirehi', '/vacancies', <VacanciesPage />)
+    // the link wins over the saved site from the first request on
+    await waitFor(() => expect(listRequests(api.calls).length).toBeGreaterThan(0))
+    expect(listRequests(api.calls).every((p) => p.get('source') === 'hirehi')).toBe(true)
+    expect(await screen.findByText('Сайт: HireHi')).toBeInTheDocument()
+    expect(screen.getByTestId('location')).toHaveTextContent(/^\/vacancies\?source=hirehi$/)
+    await waitFor(() => expect(JSON.parse(localStorage.getItem(FILTERS_KEY) ?? '{}').source).toBe('hirehi'))
+    view.unmount()
+
+    // the plain address of the menu and a link to a group keep the saved site, and the address shows it
+    api = stubApi({ '/api/vacancies/hidden-employers': [], '/api/vacancies': EMPTY_LIST })
+    view = renderAt('/vacancies?group=sent', '/vacancies', <VacanciesPage />)
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent(/^\/vacancies\?source=hirehi$/))
+    await waitFor(() => expect(listRequests(api.calls).some((p) => p.get('group') === 'sent' && p.get('source') === 'hirehi')).toBe(true))
+    view.unmount()
+
+    // an unknown site is no filter: the list never asks with it and the address gets the saved site instead
+    api = stubApi({ '/api/vacancies/hidden-employers': [], '/api/vacancies': EMPTY_LIST })
+    renderAt('/vacancies?source=hh.ru', '/vacancies', <VacanciesPage />)
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent(/^\/vacancies\?source=hirehi$/))
+    expect(listRequests(api.calls).every((p) => p.get('source') === 'hirehi')).toBe(true)
+  })
 })
 
 describe('VacanciesPage, classic view', () => {
@@ -398,6 +465,27 @@ describe('VacanciesPage, classic view', () => {
     fireEvent.click(reset)
     await waitFor(() => expect(listRequests(api.calls).at(-1)!.has('max_responses')).toBe(false))
     expect(screen.getByLabelText('Откликов до')).toHaveValue('')
+  })
+
+  it('has the site next to the search, shows it in the address, and a reset clears it', async () => {
+    localStorage.setItem(LAYOUT_KEY, 'classic')
+    const api = stubApi({ '/api/vacancies/hidden-employers': [], '/api/vacancies': list([HIREHI_ROW]) })
+    renderAt('/vacancies', '/vacancies', <VacanciesPage />)
+    const site = await screen.findByLabelText('Сайт')
+    expect(site).toHaveValue('')
+    expect(site).toHaveAttribute('title', SITE_HINT)
+    expect(within(site).getAllByRole('option').map((o) => o.textContent)).toEqual(['Все сайты', 'hh.ru', 'HireHi'])
+    const reset = screen.getByRole('button', { name: 'Сбросить фильтры' })
+    expect(reset).toBeDisabled()
+
+    fireEvent.change(site, { target: { value: 'hirehi' } })
+    await waitFor(() => expect(listRequests(api.calls).at(-1)!.get('source')).toBe('hirehi'))
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent(/^\/vacancies\?source=hirehi$/))
+    expect(reset).toBeEnabled()
+    fireEvent.click(reset)
+    await waitFor(() => expect(listRequests(api.calls).at(-1)!.has('source')).toBe(false))
+    expect(screen.getByLabelText('Сайт')).toHaveValue('')
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent(/^\/vacancies$/))
   })
 
   it('opens the card from a row of the table and walks it with J', async () => {

@@ -17,6 +17,7 @@ import {
   rowStatus,
   salaryPublished,
   scopeEmpty,
+  SITE_HINT,
   siteOf,
   staleText,
   unavailableHint,
@@ -74,12 +75,14 @@ describe('filterChips', () => {
       include_snoozed: true,
       fresh_days: '7',
       max_responses: '300',
+      source: 'hirehi',
     }
     const searches = [{ id: 7, name: 'QA-автоматизация' }] as SavedSearch[]
     expect(filterChips(f, searches, [], []).map((c) => sp(c.label))).toEqual([
       'Не старше 7 дней',
       'Откликов до 300',
       'Поиск: QA-автоматизация',
+      'Сайт: HireHi',
       'Критерии: основная анкета',
       'Формат: гибрид',
       'Опыт: 1–3 года',
@@ -102,6 +105,15 @@ describe('filterChips', () => {
     const chip = filterChips(f).find((c) => c.key === 'exp-noExperience')!
     expect(chip.clear(f).experience).toBe('between1And3')
   })
+
+  it('names the site, says what «hh.ru» takes and clears it with its cross', () => {
+    const f = { ...DEFAULT_FILTERS, fresh_days: '', source: 'hh' }
+    const [chip] = filterChips(f)
+    expect([chip.key, chip.label, chip.title]).toEqual(['site', 'Сайт: hh.ru', SITE_HINT])
+    expect(SITE_HINT).toBe('Вакансия, которую HireHi взял с hh.ru, считается вакансией hh.ru.')
+    expect(chip.clear(f)).toEqual({ ...DEFAULT_FILTERS, fresh_days: '' })
+    expect(filterChips({ ...f, source: 'hirehi' }).map((c) => c.label)).toEqual(['Сайт: HireHi'])
+  })
 })
 
 describe('clearFilters', () => {
@@ -110,9 +122,10 @@ describe('clearFilters', () => {
     expect(clearFilters(f)).toEqual({ ...DEFAULT_FILTERS, group: 'maybe', sort: 'published' })
   })
 
-  it('turns the freshness filter back on and clears the responses cap: the defaults', () => {
+  it('turns the freshness filter back on and clears the responses cap and the site: the defaults', () => {
     expect(clearFilters({ ...DEFAULT_FILTERS, fresh_days: '' }).fresh_days).toBe('5')
     expect(clearFilters({ ...DEFAULT_FILTERS, max_responses: '1000' }).max_responses).toBe('')
+    expect(clearFilters({ ...DEFAULT_FILTERS, source: 'hirehi' }).source).toBe('')
   })
 })
 
@@ -124,6 +137,7 @@ describe('canResetFilters', () => {
   it('resets a filter turned off or set', () => {
     expect(canResetFilters({ ...DEFAULT_FILTERS, fresh_days: '' })).toBe(true)
     expect(canResetFilters({ ...DEFAULT_FILTERS, max_responses: '1000' })).toBe(true)
+    expect(canResetFilters({ ...DEFAULT_FILTERS, source: 'hh' })).toBe(true)
     expect(canResetFilters({ ...DEFAULT_FILTERS, q: 'go' })).toBe(true)
     expect(canResetFilters({ ...DEFAULT_FILTERS, include_snoozed: true })).toBe(true)
   })

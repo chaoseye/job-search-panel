@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_FILTERS, FILTERS_KEY, isGroup, LAYOUT_KEY, loadFilters, loadLayout, savedScopeQuery, scopeQuery } from './vacancyFilters'
+import { DEFAULT_FILTERS, FILTERS_KEY, isGroup, isSite, LAYOUT_KEY, loadFilters, loadLayout, savedScopeQuery, scopeQuery, SITES, withSiteFrom } from './vacancyFilters'
 
 function storage(value: string | null) {
   return { getItem: (key: string) => (key === FILTERS_KEY ? value : null) }
@@ -74,6 +74,37 @@ describe('the responses cap in the saved filters', () => {
   it('drops a value of another type', () => {
     expect(loadFilters(storage(JSON.stringify({ max_responses: 1000 }))).max_responses).toBe('')
     expect(loadFilters(storage(JSON.stringify({ max_responses: null }))).max_responses).toBe('')
+  })
+})
+
+describe('the site in the saved filters and in the address', () => {
+  it('is every site by default, also for filters saved before it existed', () => {
+    expect(DEFAULT_FILTERS.source).toBe('')
+    expect(SITES.map(([id]) => id)).toEqual(['', 'hh', 'hirehi'])
+    expect(loadFilters(storage(JSON.stringify({ group: 'maybe' }))).source).toBe('')
+  })
+
+  it('keeps a site the API knows', () => {
+    expect(loadFilters(storage(JSON.stringify({ source: 'hirehi' }))).source).toBe('hirehi')
+    expect(loadFilters(storage(JSON.stringify({ source: 'hh' }))).source).toBe('hh')
+  })
+
+  it.each(['hh.ru', 'HireHi', 'HH', 'all', 5, null])('drops %s: the list would answer 422', (raw) => {
+    expect(loadFilters(storage(JSON.stringify({ source: raw }))).source).toBe('')
+  })
+
+  it('is not a standing filter: the menu counter does not ask with it', () => {
+    expect(savedScopeQuery(storage(JSON.stringify({ source: 'hirehi' })))).toBe('fresh_days=5')
+  })
+
+  it('takes the site a link names over the saved one and ignores an unknown one', () => {
+    const saved = { ...DEFAULT_FILTERS, group: 'maybe', source: 'hh' }
+    expect(withSiteFrom(saved, new URLSearchParams('source=hirehi'))).toEqual({ ...saved, source: 'hirehi' })
+    expect(withSiteFrom(saved, new URLSearchParams('open=5'))).toBe(saved)
+    expect(withSiteFrom(saved, new URLSearchParams('source=HireHi'))).toBe(saved)
+    expect(withSiteFrom(saved, new URLSearchParams('source='))).toBe(saved)
+    expect(isSite('hirehi') && isSite('hh')).toBe(true)
+    expect(isSite('') || isSite('hh.ru') || isSite(null)).toBe(false)
   })
 })
 

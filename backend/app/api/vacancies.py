@@ -67,6 +67,10 @@ async def list_vacancies(
     experience: str | None = Query(None, description="hh experience ids через запятую: noExperience,between1And3"),
     fresh_days: FreshDays = None,
     max_responses: MaxResponses = None,
+    source: Annotated[
+        Literal["hh", "hirehi"] | None,
+        Query(description="сайт вакансии: hh — hh.ru, hirehi — HireHi (вакансия, которую HireHi взял с hh.ru, — hh)"),
+    ] = None,
 ) -> dict[str, Any]:
     if group not in svc.GROUPS:
         raise HTTPException(status_code=400, detail=f"Неизвестная группа: {group}")
@@ -91,6 +95,7 @@ async def list_vacancies(
         experience=experience_ids or None,
         fresh_days=fresh_days,
         max_responses=max_responses,
+        source=source,
     )
 
 
