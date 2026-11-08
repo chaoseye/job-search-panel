@@ -14,9 +14,10 @@ the letter, the bot, the statistics. What differs:
 - A refusal (a DDoS-Guard challenge, HTTP 403 or 429, a redirect off the site) is an error of the source: the reading
   stops for BLOCK_HOURS and the bot is told once (event `job_error`). Nothing is worked around.
 - A vacancy HireHi took from hh.ru («Отклик на hh» on the card) is no copy: it goes through hh.ru (route_to_hh) — the
-  hh.ru vacancy already in the panel, or the one the hh.ru API finds among the employer's recent ones, added like
-  «По ссылке» but judged by the rules like any search result; the HireHi row becomes its duplicate. Not found — the row
-  is skipped with the reason.
+  hh.ru vacancy already in the panel, or the one the hh.ru API finds among the employer's recent ones (by the hh.ru
+  number from the logo, else by the company name), added like «По ссылке» but judged by the rules like any search
+  result; the HireHi row becomes its duplicate. Not found — the row is skipped with the reason, and the log and its
+  history name the employer's vacancy that came nearest.
 - Closed: the card is gone (404) or its validThrough passed (check_closed, once a day). The tasks of hh.ru never touch
   these vacancies: they have no hh_id, and freshness / responses / the apply queue take `source = hh` only.
 - Applying: by hand on the HireHi page (the assistant: the letter is copied, the page opens, «Да, отправлено»). The
@@ -60,10 +61,12 @@ from app.hirehi.parse import (
     LayoutChanged,
     ListingItem,
     card_path,
+    company_query,
     item_reason,
     parse_card,
     parse_listing,
-    title_similarity,
+    same_employer,
+    title_scores,
 )
 from app.net import HTTP_ERRORS, error_text
 from app.services.audit import audit
@@ -71,7 +74,6 @@ from app.services.jobs import FAILED_KEY
 from app.services.robots_rules import RobotsRules
 from app.services.sources import is_hh
 from app.services.state import get_setting, get_system_state, set_pause, set_setting
-from app.services.textmatch import norm
 
 if TYPE_CHECKING:  # pragma: no cover
     from app.runtime import Runtime
@@ -94,10 +96,15 @@ CHECK_EVERY = timedelta(hours=20)
 STALE_DAYS = 2
 MAX_CARD_ERRORS = 3
 # the hh.ru twin of a HireHi vacancy: published at most this long before HireHi listed it (and a little after: the
-# clocks of the two sites), with the title at least this similar (title_similarity)
+# clocks of the two sites), with the title at least this similar (title_scores; HireHi lists a vacancy of hh.ru within
+# about two hours of its publication)
 TWIN_BEFORE = timedelta(days=14)
 TWIN_AFTER = timedelta(hours=12)
 TITLE_MATCH = 0.6
+# a vacancy already in the panel is the twin without asking hh.ru only when published this near the time HireHi listed
+# it: a farther one may be a sibling of the same employer with the same core of the title («Frontend Developer (B2B)»
+# for «Frontend developer»), and the panel does not know all of the employer's vacancies — hh.ru does
+TWIN_NEAR = timedelta(days=1)
 # the search of hh.ru for the twin: the window [published - TWIN_BEFORE, published + TWIN_AFTER], newest first from its
 # end, up to TWIN_PAGES pages of 100 while none is similar (a big employer publishes hundreds a week); hh.ru searches
 # the last HH_SEARCH_DAYS days
@@ -597,33 +604,47 @@ async def process_new(
 
 async def find_hh_twin(session: AsyncSession, row: Vacancy) -> Vacancy | None:
     """The hh.ru vacancy already in the panel that a HireHi row repeats: the same employer (the hh.ru number from the
-    logo, else the name), published shortly before HireHi listed it, the title similar (HireHi rewrites titles)."""
+    logo, else a name that holds the HireHi one — same_employer), published at most TWIN_NEAR before HireHi listed it
+    (a farther one may be a sibling of the same employer: then hh.ru is asked, it sees them all), the title similar
+    (HireHi rewrites titles — title_scores). The best score, then the nearest in time, then the share of the whole
+    title: HireHi drops exactly the brackets, so the real twin often has a smaller share of its whole title than a
+    sibling without them."""
     published = as_utc(row.published_at) or utcnow()
     stmt = select(Vacancy).where(
         Vacancy.source == "hh",
-        Vacancy.published_at >= published - TWIN_BEFORE,
+        Vacancy.published_at >= published - TWIN_NEAR,
         Vacancy.published_at <= published + TWIN_AFTER,
     )
+    name = (row.employer_name or "").strip()
     if row.employer_id:
         stmt = stmt.where(Vacancy.employer_id == row.employer_id)
-    elif row.employer_name:
-        stmt = stmt.where(func.lower(Vacancy.employer_name) == row.employer_name.lower())
+    elif name:
+        # the hh.ru name may be longer («Онлайн-школа Звезда» for «Звезда»): narrowed here (lower() of the connection
+        # knows the Cyrillic case), judged by same_employer
+        stmt = stmt.where(func.lower(Vacancy.employer_name).contains(name.lower(), autoescape=True))
     else:
         return None
-    best: tuple[float, float, Vacancy] | None = None
+    best: tuple[tuple[float, float, float], Vacancy] | None = None
     for cand in (await session.execute(stmt)).scalars():
-        score = title_similarity(row.name, cand.name)
+        if not row.employer_id and not same_employer(name, cand.employer_name):
+            continue
+        score, full = title_scores(row.name, cand.name)
         if score < TITLE_MATCH:
             continue
         gap = abs(((as_utc(cand.published_at) or published) - published).total_seconds())
-        key = (score, -gap, cand)
-        if best is None or key[:2] > best[:2]:
-            best = key
-    if best is None:
-        return None
-    twin = best[2]
+        key = (score, -gap, full)
+        if best is None or key > best[0]:
+            best = (key, cand)
+    return best[1] if best is not None else None
+
+
+async def settle_twin(session: AsyncSession, row: Vacancy, twin: Vacancy) -> Vacancy:
+    """The twin of a HireHi row against the duplicates the scan of hh.ru made, whichever way it was found: a duplicate
+    of this very HireHi row (same title, the HireHi row came first) goes back to work — hh.ru is where the vacancy goes
+    now; a duplicate of another hh.ru vacancy gives way to that one. In find_hh_twin alone it missed a twin published
+    more than TWIN_NEAR before: the base does not look so far, hh.ru gives back its existing row, and the two rows
+    stayed duplicates of each other."""
     if twin.duplicate_of_id == row.id:
-        # the scan judged it a duplicate of this very HireHi row (same title): hh.ru is where it goes now
         twin.duplicate_of_id = None
         twin.pipeline_status = "new"
         twin.pipeline_reason = None
@@ -634,32 +655,35 @@ async def find_hh_twin(session: AsyncSession, row: Vacancy) -> Vacancy | None:
     return twin
 
 
-async def _employer_by_name(client: HHClient, name: str | None) -> str | None:
-    """The hh.ru employer number of a HireHi company without it in the logo: one employer of hh.ru with exactly this
-    name (GET /employers), else nothing."""
-    if not name:
-        return None
-    data = await client.public("/employers", params={"text": name, "only_with_vacancies": "true", "per_page": 20})
-    items = data.get("items") if isinstance(data, dict) else None
-    exact = [
-        str(i["id"]) for i in items or [] if isinstance(i, dict) and i.get("id") and norm(i.get("name")) == norm(name)
-    ]
-    return exact[0] if len(exact) == 1 else None
-
-
 async def fetch_hh_twin(
-    session: AsyncSession, settings: Settings, client: HHClient, row: Vacancy, ctx: ScanContext
+    session: AsyncSession,
+    settings: Settings,
+    client: HHClient,
+    row: Vacancy,
+    ctx: ScanContext,
+    *,
+    trace: dict[str, Any] | None = None,
 ) -> Vacancy | None:
-    """The hh.ru vacancy of a HireHi row through the hh.ru API (GET /vacancies of the employer published around the
-    time HireHi listed it): the most similar title, published before HireHi listed it. Found — the
-    panel's row of it (an existing one, or a new `new` one, as «По ссылке» makes it, but without «оставить»: the rules
-    judge it)."""
+    """The hh.ru vacancy of a HireHi row through the hh.ru API (GET /vacancies published around the time HireHi listed
+    it): of the employer by its hh.ru number from the logo, else of every employer whose name holds
+    the HireHi one (`text` + `search_field=company_name`: HireHi shortens names, and one name may be several
+    employers' — same_employer and the title tell them apart). The best title_scores, then the nearest in time (HireHi
+    lists a vacancy of hh.ru within hours of its publication), then the share of the whole title. Found — the panel's
+    row of it (an existing one, or a new `new` one, as «По ссылке» makes it, but without «оставить»: the rules judge
+    it). `trace` gets how hh.ru was asked and the employer's vacancy nearest by the title (the log and the history of a
+    miss)."""
     from app.services.scanner import _json, apply_data_to_row
 
-    await release_writes(session)  # no open write transaction across the hh.ru requests
-    employer = row.employer_id or await _employer_by_name(client, row.employer_name)
-    if not employer:
+    seen = trace if trace is not None else {}
+    if row.employer_id:
+        query = {"employer_id": row.employer_id}
+    elif text := company_query(row.employer_name):
+        query = {"text": text, "search_field": "company_name"}
+    else:
+        seen["by"] = "no employer"
         return None
+    seen["by"] = "employer_id" if row.employer_id else "company_name"
+    await release_writes(session)  # no open write transaction across the hh.ru requests
     published = as_utc(row.published_at) or utcnow()
     now = utcnow()
     # newest first from the end of the window: the later vacancies of a busy employer do not push the twin off
@@ -667,12 +691,13 @@ async def fetch_hh_twin(
     end = min(published + TWIN_AFTER, now)
     if end <= start:
         return None
-    best: tuple[float, float, dict[str, Any]] | None = None
+    best: tuple[tuple[float, float, float], dict[str, Any]] | None = None
+    nearest: tuple[float, str, str] | None = None
     for page in range(TWIN_PAGES):
         data = await client.public(
             "/vacancies",
             params={
-                "employer_id": employer,
+                **query,
                 "date_from": start.strftime("%Y-%m-%dT%H:%M:%S%z"),
                 "date_to": end.strftime("%Y-%m-%dT%H:%M:%S%z"),
                 "per_page": 100,
@@ -682,27 +707,36 @@ async def fetch_hh_twin(
             },
         )
         data = data if isinstance(data, dict) else {}
+        seen["pages"] = page + 1
         for item in data.get("items") or []:
             if not isinstance(item, dict) or not item.get("id"):
                 continue
             short = normalize_vacancy(item, full=False)
             if short.archived:
                 continue
+            if not row.employer_id and not same_employer(row.employer_name, short.employer_name):
+                continue
             hh_published = short.published_at
             if hh_published is not None and hh_published > published + TWIN_AFTER:
                 continue
-            score = title_similarity(row.name, short.name)
+            score, full = title_scores(row.name, short.name)
+            seen["candidates"] = seen.get("candidates", 0) + 1
+            if nearest is None or score > nearest[0]:
+                nearest = (score, short.name or "", str(item["id"]))
             if score < TITLE_MATCH:
                 continue
             gap = abs(((hh_published or published) - published).total_seconds())
-            if best is None or (score, -gap) > best[:2]:
-                best = (score, -gap, item)
+            key = (score, -gap, full)
+            if best is None or key > best[0]:
+                best = (key, item)
         pages = data.get("pages")
         if best is not None or not isinstance(pages, int) or page + 1 >= pages:
             break
+    if nearest is not None:
+        seen["nearest"] = {"name": nearest[1], "hh_id": nearest[2], "score": round(nearest[0], 2)}
     if best is None:
         return None
-    item = best[2]
+    item = best[1]
     hh_id = str(item["id"])
     existing = (await session.execute(select(Vacancy).where(Vacancy.hh_id == hh_id))).scalar_one_or_none()
     if existing is not None:
@@ -733,16 +767,18 @@ async def route_to_hh(
     summary: dict[str, Any] | None = None,
 ) -> str:
     """A HireHi vacancy taken from hh.ru goes through hh.ru: the HireHi row becomes a duplicate (`skipped`) of the hh.ru
-    vacancy — the one in the panel or the one the hh.ru API finds; a new one runs the pipeline of hh.ru right away. An
-    hh.ru error leaves the row `new` for the next run (MAX_CARD_ERRORS times)."""
+    vacancy — the one in the panel or the one the hh.ru API finds, settled against the duplicates of the scan
+    (settle_twin); a new one runs the pipeline of hh.ru right away. An hh.ru error leaves the row `new` for the next run
+    (MAX_CARD_ERRORS times)."""
     from app.services.scanner import context_for, process_vacancy
 
     stats = summary if summary is not None else {}
     twin = await find_hh_twin(session, row)
     created = False
+    trace: dict[str, Any] = {}
     if twin is None:
         try:
-            twin = await fetch_hh_twin(session, settings, client, row, ctx)
+            twin = await fetch_hh_twin(session, settings, client, row, ctx, trace=trace)
         except HHCaptchaRequired:
             raise
         except HHAuthError as exc:
@@ -763,8 +799,23 @@ async def route_to_hh(
         row.pipeline_status = "skipped"
         row.pipeline_reason = HH_NOT_FOUND_REASON
         stats["hh_not_found"] = stats.get("hh_not_found", 0) + 1
-        await audit(session, "vacancies", f"HireHi: «{row.name}» с hh.ru, на hh.ru не нашлась", vacancy_id=row.id)
+        # what was asked and what came nearest: a miss can be checked by hand
+        log.info(
+            "hirehi_hh_twin_not_found",
+            source_id=row.source_id,
+            title=row.name,
+            employer=row.employer_name,
+            employer_id=row.employer_id,
+            **trace,
+        )
+        nearest = trace.get("nearest")
+        hint = ""
+        if nearest:
+            score = f"{nearest['score']:.2f}".replace(".", ",")
+            hint = f" (ближе всех у работодателя: «{nearest['name']}», сходство {score})"
+        await audit(session, "vacancies", f"HireHi: «{row.name}» с hh.ru, на hh.ru не нашлась{hint}", vacancy_id=row.id)
         return row.pipeline_status
+    twin = await settle_twin(session, row, twin)
     if twin.hh_id:
         _tag_all(twin, row)
     row.duplicate_of_id = twin.id

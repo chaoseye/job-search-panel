@@ -63,6 +63,15 @@ def ago(**delta: float) -> str:
     return (utcnow() - timedelta(**delta)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def hh_time(**delta: float) -> str:
+    """A publication time of hh.ru `delta` ago, as the hh.ru API writes it."""
+    return (utcnow() - timedelta(**delta)).strftime("%Y-%m-%dT%H:%M:%S+0000")
+
+
+# a logo of HireHi without the hh.ru number of the employer
+NO_HH_ICON = "/static/uploads/Some_url_20261016110557_4b49ec.webp"
+
+
 def card_url(j: dict[str, Any]) -> str:
     return f"{SITE}/{j['category']}/{slug(j['title'])}-{j['id']}"
 
@@ -343,22 +352,256 @@ async def test_a_vacancy_of_hh_not_found_on_hh_is_skipped_with_the_reason(api, r
     await create_search(client)
     mock_site(respx_mock)
     mock_hh(respx_mock)
-    vac = job(3101, "Kafka engineer", created=ago(hours=1), icon="/static/uploads/Some_url_20261016110557_4b49ec.webp")
+    vac = job(3101, "Kafka engineer", created=ago(hours=1), icon=NO_HH_ICON)
     mock_listing(respx_mock, [vac])
     mock_card(respx_mock, vac, label="Отклик на hh")
-    # no hh.ru number in the logo: one employer of hh.ru with exactly this name, then its recent vacancies
-    employers = respx_mock.get(f"{HH}/employers").mock(
-        return_value=httpx.Response(200, json={"items": [{"id": "31", "name": "Рога и копыта"}]})
+    # no hh.ru number in the logo: the vacancies by the company name around the date HireHi listed it
+    employers = respx_mock.get(f"{HH}/employers").mock(return_value=httpx.Response(500))
+    unrelated = short_item(
+        id="556", name="Бухгалтер", employer={"id": "31", "name": "Рога и копыта"}, published_at=hh_time(hours=2)
     )
-    unrelated = short_item(id="556", name="Бухгалтер", employer={"id": "31", "name": "Рога и копыта"})
-    respx_mock.get(f"{HH}/vacancies", params={"employer_id": "31"}).mock(
-        return_value=httpx.Response(200, json={"found": 1, "pages": 1, "items": [unrelated]})
-    )
+    by_name = respx_mock.get(f"{HH}/vacancies", params={"text": '"Рога и копыта"', "search_field": "company_name"})
+    by_name.mock(return_value=httpx.Response(200, json={"found": 1, "pages": 1, "items": [unrelated]}))
     summary = await hirehi.sync_hirehi(runtime, only_due=False)
     got = await rows(runtime)
-    assert employers.call_count == 1 and "hh556" not in got
+    assert employers.call_count == 0 and by_name.call_count == 1 and "hh556" not in got
+    assert "employer_id" not in by_name.calls[0].request.url.params
     assert got["3101"].pipeline_status == "skipped" and got["3101"].duplicate_of_id is None
     assert got["3101"].pipeline_reason == hirehi.HH_NOT_FOUND_REASON and summary["hh_not_found"] == 1
+    # the history of the vacancy names the employer's vacancy that came nearest: a miss can be checked by hand
+    history = (await client.get(f"/api/vacancies/{got['3101'].id}")).json()["history"]
+    assert any("ближе всех у работодателя: «Бухгалтер», сходство 0,00" in h["message"] for h in history), history
+
+
+@respx.mock(assert_all_called=False)
+async def test_without_the_hh_number_the_twin_is_looked_for_by_the_company_name(
+    api, respx_mock: respx.MockRouter
+) -> None:
+    """HireHi gave no hh.ru number in the logo, and the one employer of exactly that name was not there —
+    HireHi shortens the name («Онлайн-школа Звезда» → «Звезда»), and one name may be two employers' («Восход» and
+    «ВОСХОД»). The vacancies are looked for by the company name; the employer's name holds the HireHi one, the title
+    decides (without the brackets and the grade of hh.ru)."""
+    client, runtime = api
+    await create_search(client)
+    mock_site(respx_mock)
+    mock_hh(respx_mock)
+    qa_head = job(3401, "Head of QA automation in fintech", company="Звезда", icon=NO_HH_ICON, created=ago(hours=1))
+    logistics = job(
+        3402, "Core backend engineer (go) in logistics", company="Восход", icon=NO_HH_ICON, created=ago(hours=2)
+    )
+    mock_listing(respx_mock, [qa_head, logistics])
+    mock_card(respx_mock, qa_head, label="Отклик на hh", company="Звезда")
+    mock_card(respx_mock, logistics, label="Отклик на hh", company="Восход")
+    employers = respx_mock.get(f"{HH}/employers").mock(return_value=httpx.Response(500))
+    school = {"id": "61", "name": "Онлайн-школа Звезда"}
+    star_items = [
+        # another company: its title is closer, its name only begins with «Звезда»
+        short_item(
+            id="8102",
+            name="Head of QA Automation",
+            employer={"id": "62", "name": "Звездарий"},
+            published_at=hh_time(hours=1, minutes=5),
+        ),
+        short_item(id="8101", name="QA Automation Lead", employer=school, published_at=hh_time(hours=1, minutes=50)),
+        short_item(id="8103", name="Тестировщик интерфейсов", employer=school, published_at=hh_time(days=2)),
+    ]
+    sunrise_items = [
+        short_item(
+            id="8201",
+            name="QA Engineer (manual / automation)",
+            employer={"id": "71", "name": "Восход"},
+            published_at=hh_time(days=1),
+        ),
+        short_item(
+            id="8202",
+            name="Senior Core Backend Engineer (Go)",
+            employer={"id": "72", "name": "ВОСХОД"},
+            published_at=hh_time(hours=2, minutes=20),
+        ),
+    ]
+    star = respx_mock.get(f"{HH}/vacancies", params={"text": '"Звезда"', "search_field": "company_name"})
+    star.mock(return_value=httpx.Response(200, json={"found": 3, "pages": 1, "items": star_items}))
+    sunrise = respx_mock.get(f"{HH}/vacancies", params={"text": '"Восход"', "search_field": "company_name"})
+    sunrise.mock(return_value=httpx.Response(200, json={"found": 2, "pages": 1, "items": sunrise_items}))
+    for item in (star_items[1], sunrise_items[1]):
+        full = {**load_full(), "id": item["id"], "name": item["name"], "employer": item["employer"]}
+        respx_mock.get(f"{HH}/vacancies/{item['id']}").mock(return_value=httpx.Response(200, json=full))
+    summary = await hirehi.sync_hirehi(runtime, only_due=False)
+    assert FAILED_KEY not in summary, summary
+    got = await rows(runtime)
+    assert employers.call_count == 0 and star.call_count == 1 and sunrise.call_count == 1
+    for route in (star, sunrise):
+        params = route.calls[0].request.url.params
+        assert "employer_id" not in params and "period" not in params and params["date_from"] < params["date_to"]
+    assert got["3401"].pipeline_status == "skipped" and got["3401"].duplicate_of_id == got["hh8101"].id
+    assert got["3402"].pipeline_status == "skipped" and got["3402"].duplicate_of_id == got["hh8202"].id
+    assert not {"hh8102", "hh8103", "hh8201"} & set(got) and summary["via_hh"] == 2
+
+
+@respx.mock(assert_all_called=False)
+async def test_the_twin_in_the_panel_is_found_by_a_longer_name_and_a_rewritten_title(
+    api, respx_mock: respx.MockRouter
+) -> None:
+    """The panel already has the hh.ru vacancy under the full name of the employer and with the brackets HireHi
+    dropped: hh.ru is not asked; a company whose name only begins with the HireHi one is not it."""
+    client, runtime = api
+    await create_search(client)
+    async with runtime.session_factory() as session:
+        for hh_id, employer, name in (
+            ("910", ("61", "Онлайн-школа Звезда"), "Frontend Developer (Mobile & Web Platforms)"),
+            ("911", ("62", "Звездарий"), "Frontend Developer"),
+        ):
+            session.add(
+                Vacancy(
+                    hh_id=hh_id,
+                    name=name,
+                    employer_id=employer[0],
+                    employer_name=employer[1],
+                    pipeline_status="suitable",
+                    source_search_ids=",",
+                    first_seen_at=utcnow(),
+                    published_at=utcnow() - timedelta(hours=2),
+                )
+            )
+        await session.commit()
+    mock_site(respx_mock)
+    mock_hh(respx_mock)
+    frontend = job(3501, "Frontend developer", company="Звезда", icon=NO_HH_ICON, created=ago(hours=1))
+    mock_listing(respx_mock, [frontend])
+    mock_card(respx_mock, frontend, label="Отклик на hh", company="Звезда")
+    hh_search = respx_mock.get(f"{HH}/vacancies").mock(return_value=httpx.Response(500))
+    await hirehi.sync_hirehi(runtime, only_due=False)
+    got = await rows(runtime)
+    assert hh_search.call_count == 0
+    assert got["3501"].pipeline_status == "skipped" and got["3501"].duplicate_of_id == got["hh910"].id
+    assert got["hh910"].pipeline_status == "suitable" and got["hh911"].pipeline_status == "suitable"
+
+
+# two vacancies of one employer match «Frontend developer» by the core of their titles: the real twin was published just
+# before HireHi listed it and has the longer brackets HireHi dropped, the sibling has a larger share of its whole title
+REAL_TWIN = "Frontend Developer (Mobile & Web Platforms)"
+SIBLING = "Frontend Developer (B2B)"
+EMPLOYER_777 = {"id": "777", "name": "Рога и копыта"}  # the logo of the helpers' listing carries 777
+
+
+def hh_vacancy(hh_id: str, name: str, published: datetime) -> Vacancy:
+    return Vacancy(
+        hh_id=hh_id,
+        name=name,
+        employer_id="777",
+        employer_name="Рога и копыта",
+        pipeline_status="suitable",
+        source_search_ids=",",
+        first_seen_at=utcnow(),
+        published_at=published,
+    )
+
+
+async def test_of_two_vacancies_in_the_panel_the_twin_is_the_one_published_just_before_hirehi(api) -> None:
+    """Of equal scores the nearest in time wins, not the larger share of the whole title; a vacancy
+    of the panel older than TWIN_NEAR is no candidate at all."""
+    _, runtime = api
+    async with runtime.session_factory() as session:
+        session.add(hh_vacancy("920", REAL_TWIN, utcnow() - timedelta(hours=2)))
+        session.add(hh_vacancy("921", SIBLING, utcnow() - timedelta(hours=20)))
+        session.add(hh_vacancy("922", SIBLING, utcnow() - timedelta(days=6)))
+        row = hirehi_row(3701, "Frontend developer")  # listed an hour ago, employer 777
+        session.add(row)
+        await session.flush()
+        twin = await hirehi.find_hh_twin(session, row)
+        assert twin is not None and twin.hh_id == "920", twin.hh_id if twin else None
+
+
+@respx.mock(assert_all_called=False)
+async def test_of_two_vacancies_on_hh_the_twin_is_the_one_published_just_before_hirehi(
+    api, respx_mock: respx.MockRouter
+) -> None:
+    client, runtime = api
+    await create_search(client)
+    mock_site(respx_mock)
+    mock_hh(respx_mock)
+    vac = job(3702, "Frontend developer", created=ago(hours=1))
+    mock_listing(respx_mock, [vac])
+    mock_card(respx_mock, vac, label="Отклик на hh")
+    items = [
+        short_item(id="8402", name=SIBLING, employer=EMPLOYER_777, published_at=hh_time(days=6)),
+        short_item(id="8401", name=REAL_TWIN, employer=EMPLOYER_777, published_at=hh_time(hours=2)),
+    ]
+    respx_mock.get(f"{HH}/vacancies", params={"employer_id": "777"}).mock(
+        return_value=httpx.Response(200, json={"found": 2, "pages": 1, "items": items})
+    )
+    for item in items:
+        full = {**load_full(), "id": item["id"], "name": item["name"], "employer": EMPLOYER_777}
+        respx_mock.get(f"{HH}/vacancies/{item['id']}").mock(return_value=httpx.Response(200, json=full))
+    await hirehi.sync_hirehi(runtime, only_due=False)
+    got = await rows(runtime)
+    assert got["3702"].duplicate_of_id == got["hh8401"].id and "hh8402" not in got
+
+
+@respx.mock(assert_all_called=False)
+async def test_an_old_sibling_in_the_panel_does_not_hide_the_twin_on_hh(api, respx_mock: respx.MockRouter) -> None:
+    """Only the sibling of six days ago is in the panel, the real twin is on hh.ru only: the panel does not answer by
+    itself, hh.ru is asked and gives the twin."""
+    client, runtime = api
+    await create_search(client)
+    async with runtime.session_factory() as session:
+        session.add(hh_vacancy("8502", SIBLING, utcnow() - timedelta(days=6)))
+        await session.commit()
+    mock_site(respx_mock)
+    mock_hh(respx_mock)
+    vac = job(3703, "Frontend developer", created=ago(hours=1))
+    mock_listing(respx_mock, [vac])
+    mock_card(respx_mock, vac, label="Отклик на hh")
+    items = [
+        short_item(id="8501", name=REAL_TWIN, employer=EMPLOYER_777, published_at=hh_time(hours=2)),
+        short_item(id="8502", name=SIBLING, employer=EMPLOYER_777, published_at=hh_time(days=6)),
+    ]
+    by_number = respx_mock.get(f"{HH}/vacancies", params={"employer_id": "777"}).mock(
+        return_value=httpx.Response(200, json={"found": 2, "pages": 1, "items": items})
+    )
+    full = {**load_full(), "id": "8501", "name": REAL_TWIN, "employer": EMPLOYER_777}
+    respx_mock.get(f"{HH}/vacancies/8501").mock(return_value=httpx.Response(200, json=full))
+    await hirehi.sync_hirehi(runtime, only_due=False)
+    got = await rows(runtime)
+    assert by_number.call_count == 1
+    assert got["3703"].duplicate_of_id == got["hh8501"].id and got["hh8502"].pipeline_status == "suitable"
+
+
+@respx.mock(assert_all_called=False)
+async def test_reprocess_without_reading_the_card_again_sends_a_missed_vacancy_to_hh(
+    api, respx_mock: respx.MockRouter
+) -> None:
+    """A vacancy of hh.ru skipped as not found there before the fix: «Переоценить» without reading the card again
+    (refetch=false — no request to HireHi) asks hh.ru once more and gives it to its twin."""
+    client, runtime = api
+    title = "Python developer of the billing platform"
+    async with runtime.session_factory() as session:
+        row = hirehi_row(3601, title, status="skipped", pipeline_reason=hirehi.HH_NOT_FOUND_REASON)
+        row.raw_full_json = json.dumps(
+            parse_card(card_html(3601, title, label="Отклик на hh")).raw(), ensure_ascii=False
+        )
+        row.full_fetched_at = utcnow()
+        session.add(row)
+        await session.commit()
+        vid, employer_id = row.id, row.employer_id
+    assert employer_id == "777"  # the logo of the helper's listing carries it
+    mock_hh(respx_mock)
+    page = respx_mock.get(url__regex=rf"^{SITE}/.*").mock(return_value=httpx.Response(500))
+    employer = {"id": "777", "name": "Рога и копыта"}
+    twin = short_item(
+        id="8301", name="Python Developer (Middle / Senior)", employer=employer, published_at=hh_time(hours=1)
+    )
+    respx_mock.get(f"{HH}/vacancies", params={"employer_id": "777"}).mock(
+        return_value=httpx.Response(200, json={"found": 1, "pages": 1, "items": [twin]})
+    )
+    full = {**load_full(), "id": "8301", "name": twin["name"], "employer": employer}
+    respx_mock.get(f"{HH}/vacancies/8301").mock(return_value=httpx.Response(200, json=full))
+    r = await client.post(f"/api/vacancies/{vid}/reprocess", params={"refetch": "false"})
+    assert r.status_code == 200, r.text
+    got = await rows(runtime)
+    assert page.call_count == 0
+    assert got["3601"].pipeline_status == "skipped" and got["3601"].duplicate_of_id == got["hh8301"].id
+    assert (got["3601"].pipeline_reason or "").startswith(hirehi.HH_ROUTED_REASON)
 
 
 @respx.mock(assert_all_called=False)
@@ -436,6 +679,77 @@ async def test_a_scan_duplicate_of_the_hirehi_row_goes_back_to_hh(api, respx_moc
     assert got["hh901"].duplicate_of_id is None and got["hh901"].pipeline_status not in ("skipped", "new")
     assert hh_full.call_count == 1
     assert got["3201"].duplicate_of_id == got["hh901"].id and got["3201"].pipeline_status == "skipped"
+
+
+@respx.mock(assert_all_called=False)
+async def test_a_scan_duplicate_published_days_before_goes_back_to_hh_too(api, respx_mock: respx.MockRouter) -> None:
+    """The same scan duplicate published three days before HireHi listed it — farther than the panel
+    looks in its base (TWIN_NEAR), so hh.ru gives back its existing row; it goes back to work all the same instead of
+    the two rows staying duplicates of each other."""
+    client, runtime = api
+    await create_search(client)
+    mock_site(respx_mock)
+    mock_hh(respx_mock)
+    vac = job(3801, "Backend engineer", created=ago(hours=1))
+    mock_listing(respx_mock, [vac])
+    mock_card(respx_mock, vac, label="Отклик на hh")
+    async with runtime.session_factory() as session:
+        first = hirehi_row(3801, "Backend engineer", employer_id="777")
+        first.raw_short_json = json.dumps(parse_listing(listing_html([vac])).items[0].raw(), ensure_ascii=False)
+        session.add(first)
+        await session.flush()
+        old = hh_vacancy("931", "Backend engineer", utcnow() - timedelta(days=3))
+        old.pipeline_status, old.duplicate_of_id = "skipped", first.id
+        session.add(old)
+        await session.commit()
+    item = short_item(id="931", name="Backend engineer", employer=EMPLOYER_777, published_at=hh_time(days=3))
+    respx_mock.get(f"{HH}/vacancies", params={"employer_id": "777"}).mock(
+        return_value=httpx.Response(200, json={"found": 1, "pages": 1, "items": [item]})
+    )
+    full = {**load_full(), "id": "931", "name": "Backend engineer", "employer": EMPLOYER_777}
+    hh_full = respx_mock.get(f"{HH}/vacancies/931").mock(return_value=httpx.Response(200, json=full))
+    await hirehi.sync_hirehi(runtime, only_due=False)
+    got = await rows(runtime)
+    assert got["hh931"].duplicate_of_id is None and got["hh931"].pipeline_status not in ("skipped", "new")
+    assert hh_full.call_count == 1
+    assert got["3801"].duplicate_of_id == got["hh931"].id and got["3801"].pipeline_status == "skipped"
+
+
+@respx.mock(assert_all_called=False)
+async def test_a_twin_from_hh_that_the_scan_took_for_a_duplicate_gives_way_to_its_original(
+    api, respx_mock: respx.MockRouter
+) -> None:
+    """hh.ru gives back a vacancy the panel keeps as a duplicate of another hh.ru vacancy: the HireHi row becomes the
+    duplicate of that original, the one that works — as it is when the twin is found in the base. The titles differ
+    (HireHi rewrote it), so the duplicate check of the scan does not take the HireHi row first."""
+    client, runtime = api
+    await create_search(client)
+    mock_site(respx_mock)
+    mock_hh(respx_mock)
+    vac = job(3802, "Backend engineer for internal services", created=ago(hours=1))
+    mock_listing(respx_mock, [vac])
+    mock_card(respx_mock, vac, label="Отклик на hh")
+    async with runtime.session_factory() as session:
+        original = hh_vacancy("941", "Backend-инженер", utcnow() - timedelta(days=4))
+        session.add(original)
+        await session.flush()
+        copy = hh_vacancy("942", "Backend-инженер", utcnow() - timedelta(days=3))
+        copy.pipeline_status, copy.duplicate_of_id = "skipped", original.id
+        session.add(copy)
+        await session.commit()
+    items = [
+        short_item(id="942", name="Backend-инженер", employer=EMPLOYER_777, published_at=hh_time(days=3)),
+        short_item(id="941", name="Backend-инженер", employer=EMPLOYER_777, published_at=hh_time(days=4)),
+    ]
+    respx_mock.get(f"{HH}/vacancies", params={"employer_id": "777"}).mock(
+        return_value=httpx.Response(200, json={"found": 2, "pages": 1, "items": items})
+    )
+    await hirehi.sync_hirehi(runtime, only_due=False)
+    got = await rows(runtime)
+    assert got["3802"].duplicate_of_id == got["hh941"].id
+    assert (got["3802"].pipeline_reason or "").startswith(hirehi.HH_ROUTED_REASON)  # the hh.ru route, not the scan
+    assert got["hh941"].pipeline_status == "suitable"
+    assert got["hh942"].pipeline_status == "skipped" and got["hh942"].duplicate_of_id == got["hh941"].id
 
 
 # ---- duplicates between the sources ----------------------------------------------------------------------------------

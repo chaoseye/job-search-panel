@@ -877,12 +877,14 @@ _SYNONYMS = {
     "designer": "дизайнер",
     "tester": "тестировщик",
     "qa": "тестировщик",
+    # HireHi turns a lead into a head and back («QA Lead» → «Head of QA»): one word
     "lead": "лид",
     "ведущий": "лид",
     "teamlead": "лид",
     "тимлид": "лид",
-    "head": "руководитель",
-    "руководителя": "руководитель",
+    "head": "лид",
+    "руководитель": "лид",
+    "руководителя": "лид",
     "director": "директор",
     "директора": "директор",
     "product": "продукт",
@@ -912,22 +914,60 @@ _SYNONYMS = {
 _TITLE_STOP = frozenset(
     {"in", "for", "of", "the", "and", "a", "an", "at", "on", "with", "в", "для", "по", "и", "на", "с"}
 )
+# the grade of an hh.ru title: HireHi drops it or moves it to the level of the vacancy («Python Developer (Middle /
+# Senior)» → «Python developer in billing»); compared after the synonyms («старший» is «senior»), «ё» as «е»
+_GRADES = frozenset({"intern", "trainee", "стажер", "junior", "junior+", "middle", "middle+", "senior", "senior+"})
+# the brackets of an hh.ru title: the grade, the stack, the team — HireHi drops them («Frontend Developer (Mobile &
+# Web Platforms)» → «Frontend developer»)
+_BRACKETS = re.compile(r"\([^()]*\)|\[[^\[\]]*\]")
 
 
-def _title_words(title: str) -> set[str]:
+def _title_words(title: str, *, core: bool = False) -> set[str]:
+    """The words of a title for comparing the two sites; `core` — without the brackets and the grade words."""
     words: set[str] = set()
-    for w in re.split(r"[^a-zа-я0-9+#]+", norm(title)):
+    for w in re.split(r"[^a-zа-я0-9+#]+", norm(_BRACKETS.sub(" ", title) if core else title)):
         if len(w) < 2 or w in _TITLE_STOP:
             continue
-        words.add(_SYNONYMS.get(w, w)[:7])  # «разработчик» and «developer» meet as «разрабо»
+        w = _SYNONYMS.get(w, w)
+        if core and w in _GRADES:
+            continue
+        words.add(w[:7])  # «разработчик» and «developer» meet as «разрабо»
     return words
 
 
+def title_scores(hirehi_title: str, hh_title: str) -> tuple[float, float]:
+    """How much the HireHi title is the hh.ru one: (the score, the share of the whole title). The share of the hh.ru
+    title's words found in the HireHi one: HireHi keeps the role and adds the domain («Бизнес-аналитик» →
+    «бизнес-аналитик в логистике»), often in English («DevOps-инженер» → «DevOps engineer for high-load
+    applications»), and drops the brackets and the grade («Backend Developer (Middle / Middle+, Python) —
+    Payment Systems» → «Backend developer in payment systems»). The score is the larger of the shares of the whole
+    hh.ru title and of the title without them; the share of the whole one tells two candidates of the same score
+    apart. 1.0 — all."""
+    mine = _title_words(hirehi_title)
+    whole = _title_words(hh_title)
+    full = len(mine & whole) / len(whole) if whole else 0.0
+    core = _title_words(hh_title, core=True)
+    part = len(mine & core) / len(core) if core else 0.0
+    return max(full, part), full
+
+
 def title_similarity(hirehi_title: str, hh_title: str) -> float:
-    """The share of the hh.ru title's words found in the HireHi one: HireHi keeps the role and adds the domain
-    («Бизнес-аналитик» → «бизнес-аналитик в логистике»), often in English («DevOps-инженер» → «DevOps engineer for
-    high-load applications»). 1.0 — all of them."""
-    target = _title_words(hh_title)
-    if not target:
-        return 0.0
-    return len(_title_words(hirehi_title) & target) / len(target)
+    """The score of title_scores: 1.0 — every word of the hh.ru title (without the brackets and the grade) is there."""
+    return title_scores(hirehi_title, hh_title)[0]
+
+
+def same_employer(hirehi_name: str | None, hh_name: str | None) -> bool:
+    """The hh.ru employer is the HireHi company: one name holds the other as whole words. HireHi shortens names
+    («Онлайн-школа Звезда» → «Звезда», «Восход, группа компаний» → «Восход»); «Восходящий» is another one."""
+    a, b = norm(hirehi_name or "").strip(), norm(hh_name or "").strip()
+    inner, outer = (a, b) if len(a) <= len(b) else (b, a)
+    if not re.search(r"[a-zа-я0-9]", inner):  # an empty name or a dash: no name to hold
+        return False
+    return re.search(rf"(?<![a-zа-я0-9]){re.escape(inner)}(?![a-zа-я0-9])", outer) is not None
+
+
+def company_query(name: str | None) -> str:
+    """The text of the hh.ru search by the company name (`search_field=company_name`): the name as one
+    phrase of the hh.ru query language, without the quotes and the asterisk of that language."""
+    clean = " ".join(re.sub(r"[\"«»*]", " ", name or "").split())
+    return f'"{clean}"' if clean else ""
