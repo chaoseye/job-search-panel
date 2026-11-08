@@ -86,7 +86,15 @@ describe('board model', () => {
     expect(primaryAction('sent', item({ application: app({ hh_negotiation_id: 'manual-5' }) }), 'assist')?.action).toBe('viewed')
     expect(primaryAction('viewed', item({ application: app() }), 'assist')?.label).toBe('Записать ответ')
     expect(manualJournal(app({ status: 'needs_manual' }))).toBe(false)
-    expect(keyHint('new', 'assist')).toContain('Enter: открыть на hh.ru')
+    expect(keyHint('new', 'assist')).toContain('Enter: открыть отклик')
     expect(keyHint('sent', 'assist')).toContain('Enter: смотрели')
+  })
+
+  it('opens the page of a HireHi vacancy in either mode: HireHi has no API', () => {
+    const hirehi = item({ vacancy: { source: 'hirehi', source_label: 'HireHi' } as BoardItem['vacancy'] })
+    expect(primaryAction('new', hirehi, 'api')).toEqual({ action: 'open', label: 'Открыть на HireHi' })
+    expect(primaryAction('new', hirehi, 'assist')).toEqual({ action: 'open', label: 'Открыть на HireHi' })
+    // no negotiation of hh.ru comes for it: its employer side is recorded by hand
+    expect(manualJournal(app({ hh_negotiation_id: null }))).toBe(true)
   })
 })

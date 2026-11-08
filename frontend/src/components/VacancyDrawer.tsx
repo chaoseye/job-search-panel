@@ -5,7 +5,7 @@ import { Link } from 'react-router-dom'
 import { apiGet, apiPost, apiPut } from '../api/client'
 import type { QuestionAnswersView, VacancyDetail } from '../api/types'
 import { formatDateTime, plural, shortAgo, shortDate } from '../lib/format'
-import { experienceShort, formatsShort, letterBadge, pipelineOf, rowFlags, salaryNet, salaryPublished } from '../lib/vacancyView'
+import { experienceShort, formatsShort, hirehiApplyHint, isHireHi, letterBadge, pipelineOf, rowFlags, salaryNet, salaryPublished, siteOf } from '../lib/vacancyView'
 import { Badge } from './ui/Badge'
 import { Button, buttonClass } from './ui/Button'
 import { cx } from './ui/cx'
@@ -53,7 +53,7 @@ export default function VacancyDrawer({
   onClose: () => void
   onChanged: () => void
   applyMode: 'api' | 'assist'
-  onApply: (id: number) => void
+  onApply: (id: number, manual?: boolean) => void
   position?: DrawerPosition
 }) {
   return (
@@ -73,7 +73,7 @@ function VacancyCard({
   id: number
   onChanged: () => void
   applyMode: 'api' | 'assist'
-  onApply: (id: number) => void
+  onApply: (id: number, manual?: boolean) => void
   position?: DrawerPosition
 }) {
   const qc = useQueryClient()
@@ -110,7 +110,7 @@ function VacancyCard({
         <div className="ml-auto flex items-center gap-1">
           {d?.alternate_url && (
             <a className={buttonClass('ghost', 'sm')} href={d.alternate_url} target="_blank" rel="noreferrer">
-              hh.ru
+              {siteOf(d)}
               <ExternalLink aria-hidden />
             </a>
           )}
@@ -168,7 +168,7 @@ function Dot() {
   return <span aria-hidden className="text-ink-3"> · </span>
 }
 
-function CardHeader({ d, act, applyMode, onApply }: { d: VacancyDetail; act: Act; applyMode: 'api' | 'assist'; onApply: (id: number) => void }) {
+function CardHeader({ d, act, applyMode, onApply }: { d: VacancyDetail; act: Act; applyMode: 'api' | 'assist'; onApply: (id: number, manual?: boolean) => void }) {
   const status = d.pipeline_status
   const active = !['skipped', 'hidden', 'already_applied'].includes(status)
   // a response exists (sent, on its way, already on hh.ru): the server refuses a new packet and a return to candidates
@@ -182,15 +182,20 @@ function CardHeader({ d, act, applyMode, onApply }: { d: VacancyDetail; act: Act
   const published = salaryPublished(d.salary)
   const flags = rowFlags(d.flags)
   const { steps, exit } = pipelineOf(d)
+  const site = siteOf(d)
+  const hirehi = isHireHi(d)
 
   const more: MenuEntry[] = []
-  if (d.alternate_url) more.push({ key: 'hh', label: 'Открыть вакансию на hh.ru', href: d.alternate_url })
-  if (d.apply_alternate_url) more.push({ key: 'apply-page', label: 'Страница отклика на hh.ru', href: d.apply_alternate_url })
+  if (d.alternate_url) more.push({ key: 'hh', label: `Открыть вакансию на ${site}`, href: d.alternate_url })
+  // the response page of HireHi is the vacancy page itself (its «Отклик» button)
+  if (d.apply_alternate_url && !hirehi) more.push({ key: 'apply-page', label: 'Страница отклика на hh.ru', href: d.apply_alternate_url })
   if (more.length) more.push('separator')
   more.push({
     key: 'reprocess',
     label: 'Переоценить',
-    hint: 'загрузить описание заново и пересчитать правила; у отправленной, в пакете или с оценкой Claude обновится только описание',
+    hint: hirehi
+      ? 'прочитать карточку на HireHi заново и пересчитать правила; у отправленной, в пакете или с оценкой Claude обновится только описание'
+      : 'загрузить описание заново и пересчитать правила; у отправленной, в пакете или с оценкой Claude обновится только описание',
     onSelect: () => act.mutate({ action: 'reprocess' }),
   })
   if (canBatch && d.evaluation) more.push({ key: 'to-batch', label: 'Переразобрать в Claude', hint: 'в следующий пакет: новая оценка и письмо', onSelect: () => act.mutate({ action: 'to-batch' }) })
@@ -216,6 +221,13 @@ function CardHeader({ d, act, applyMode, onApply }: { d: VacancyDetail; act: Act
         </h2>
         <div className="mt-1 text-sm text-ink-2">
           <span className="font-medium text-ink">{d.employer.name ?? 'Работодатель не указан'}</span>
+          {hirehi && (
+            <span className="ml-1.5 align-middle">
+              <Badge tone="info" title="Вакансия с HireHi">
+                HireHi
+              </Badge>
+            </span>
+          )}
           {d.employer.accredited_it && (
             <span className="ml-1.5 align-middle">
               <Badge tone="outline" title="Аккредитованная IT-компания">
@@ -296,8 +308,8 @@ function CardHeader({ d, act, applyMode, onApply }: { d: VacancyDetail; act: Act
 
       <div className="flex flex-wrap items-center gap-2">
         {canApply && (
-          <Button variant="primary" onClick={() => onApply(d.id)} disabled={Boolean(blockReason)}>
-            {applyMode === 'api' ? 'Откликнуться через API' : 'Открыть отклик на hh.ru'}
+          <Button variant="primary" onClick={() => onApply(d.id, hirehi)} disabled={Boolean(blockReason)}>
+            {applyMode === 'api' && !hirehi ? 'Откликнуться через API' : `Открыть отклик на ${site}`}
           </Button>
         )}
         {active && <SkipButton act={act} />}
@@ -340,11 +352,18 @@ function StatusLine({ d, blockReason }: { d: VacancyDetail; blockReason: string 
   const s = d.pipeline_status
   if (s === 'sent') lines.push('Отклик отправлен.')
   if (s === 'queued') lines.push('В очереди на отправку через API.')
-  if (s === 'already_applied') lines.push('На hh.ru уже есть отклик.')
+  const site = siteOf(d)
+  if (s === 'already_applied') lines.push(`На ${site} уже есть отклик.`)
   if (s === 'awaiting_claude') lines.push(`В пакете ${d.batch_id ?? ''}: Claude разберёт его при следующем запуске /hh-batch.`)
   if (d.snoozed_until) lines.push(`Отложена до ${formatDateTime(d.snoozed_until)}.`)
   if (d.pipeline_reason) lines.push(`Причина: ${d.pipeline_reason}.`)
-  if (d.archived) lines.push('Закрыта на hh.ru: откликнуться на неё нельзя. Если её откроют снова, добавьте её по ссылке на hh.ru.')
+  if (d.archived)
+    lines.push(
+      isHireHi(d)
+        ? 'Закрыта на HireHi: откликнуться на неё нельзя. Если она снова появится на HireHi, нажмите «Переоценить».'
+        : 'Закрыта на hh.ru: откликнуться на неё нельзя. Если её откроют снова, добавьте её по ссылке на hh.ru.',
+    )
+  if (isHireHi(d) && !d.archived && !['sent', 'already_applied', 'skipped', 'hidden'].includes(s)) lines.push(hirehiApplyHint(d.source_apply_label))
   if (d.user_override) lines.push('Оставлена вручную: правила отбора к ней не применяются.')
   if (d.selection_profile_name) lines.push(`Критерии отбора: ${d.selection_profile_name}.`)
   if (blockReason) lines.push(`Отклик пока нельзя открыть: ${blockReason}.`)
@@ -483,7 +502,7 @@ function LetterTab({ d, act, onChanged }: { d: VacancyDetail; act: Act; onChange
         ) : (
           <span className="text-caption text-ink-2">
             {/* a closed vacancy goes to Claude no more: no letter will come from a packet */}
-            {d.archived ? 'Письма нет: вакансия закрыта на hh.ru.' : 'Письма ещё нет: Claude напишет его при разборе. Можно написать самому или взять шаблон.'}
+            {d.archived ? `Письма нет: вакансия закрыта на ${siteOf(d)}.` : 'Письма ещё нет: Claude напишет его при разборе. Можно написать самому или взять шаблон.'}
           </span>
         )}
         {d.revision_request && (
@@ -631,7 +650,7 @@ function QuestionsBlock({ d }: { d: VacancyDetail }) {
           {!d.archived && (
             <>
               <p className="text-caption text-ink-2">
-                Если форма отклика на hh.ru задаёт вопросы, вставьте их сюда как есть: по вопросу на абзац, варианты ответа списком. Claude ответит по
+                Если форма отклика на {siteOf(d) === 'hh.ru' ? 'hh.ru' : 'сайте работодателя'} задаёт вопросы, вставьте их сюда как есть: по вопросу на абзац, варианты ответа списком. Claude ответит по
                 фактам профиля с учётом письма; где фактов нет, поставит «уточнить».
               </p>
               <Textarea aria-label="Вопросы работодателя" value={text} onChange={(e) => setText(e.target.value)} placeholder={'Есть ли у вас опыт…?\n\nКакие технологии использовали?\n* Docker\n* Kafka'} />

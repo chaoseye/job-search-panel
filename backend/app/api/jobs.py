@@ -84,6 +84,18 @@ async def start_responses(
     return {"job_run_id": run_id}
 
 
+@router.post("/hirehi")
+async def start_hirehi(runtime: Annotated[Runtime, Depends(get_runtime)]) -> dict[str, Any]:
+    """Reads every enabled HireHi search right now (the hourly job `hirehi_sync`); no hh.ru sign-in needed."""
+    from app.services.hirehi import JOB, sync_hirehi
+
+    try:
+        run_id = await runtime.jobs.start(JOB, lambda: sync_hirehi(runtime, only_due=False))
+    except JobBusy as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"job_run_id": run_id}
+
+
 @router.post("/sync")
 async def start_sync(
     runtime: Annotated[Runtime, Depends(get_runtime)],

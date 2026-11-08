@@ -28,6 +28,7 @@ from app.hh.errors import (
 )
 from app.services.audit import audit
 from app.services.letters import check_before_send, current_letter, current_letters_map, letter_status
+from app.services.sources import apply_url, is_hh, source_label, vacancy_url
 from app.services.state import get_setting, get_system_state, read_capabilities, set_pause
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -183,10 +184,18 @@ class LimitsStatus:
 
 
 async def sent_count_since(session: AsyncSession, since: datetime, until: datetime | None = None) -> int:
-    cond = [Application.status == "sent", Application.sent_at >= since, Application.dry_run.is_(False)]
+    """Responses sent on hh.ru since `since` — what its daily cap and the limits of the panel count. A response to a
+    HireHi vacancy goes to another site (the company's page, Telegram) and takes nothing of them."""
+    cond = [
+        Application.status == "sent",
+        Application.sent_at >= since,
+        Application.dry_run.is_(False),
+        Vacancy.source == "hh",
+    ]
     if until is not None:
         cond.append(Application.sent_at < until)
-    return int((await session.execute(select(func.count(Application.id)).where(and_(*cond)))).scalar() or 0)
+    stmt = select(func.count(Application.id)).join(Vacancy, Vacancy.id == Application.vacancy_id).where(and_(*cond))
+    return int((await session.execute(stmt)).scalar() or 0)
 
 
 async def limits_status(session: AsyncSession, settings: Settings, *, now: datetime | None = None) -> LimitsStatus:
@@ -249,6 +258,9 @@ async def validate_for_apply(
 ) -> tuple[list[str], str | None]:
     """Returns (blocking problems, letter text)."""
     problems: list[str] = []
+    if not is_hh(vacancy) and mode == "api":
+        # no API of HireHi: the response is made on its page, by hand (the assistant)
+        problems.append(f"вакансия {source_label(vacancy.source)}: откликнуться можно только вручную на её странице")
     if vacancy.archived:
         problems.append("вакансия в архиве")
     if vacancy.hidden:
@@ -414,9 +426,10 @@ async def _after_real_send(
             "vacancy_id": app_row.vacancy_id,
             "name": vacancy.name if vacancy is not None else f"#{app_row.vacancy_id}",
             "employer": vacancy.employer_name if vacancy is not None else None,
-            "url": vacancy.alternate_url if vacancy is not None else None,
+            "url": vacancy_url(vacancy) if vacancy is not None else None,
+            "source": vacancy.source if vacancy is not None else None,
             "mode": app_row.mode,
-            "mode_label": MODE_LABELS.get(app_row.mode, app_row.mode),
+            "mode_label": mode_label(app_row.mode, vacancy),
             "negotiation_id": app_row.hh_negotiation_id,
         },
     )
@@ -429,6 +442,11 @@ async def send_one(session: AsyncSession, settings: Settings, client: HHClient, 
     if vacancy is None:
         app_row.status = "failed"
         app_row.error_text = "вакансия удалена из базы"
+        return app_row.status
+    if not is_hh(vacancy) or not vacancy.hh_id:
+        # never queued by the panel (validate_for_apply), but a row of another source must not reach POST /negotiations
+        app_row.status = "failed"
+        app_row.error_text = f"вакансия {source_label(vacancy.source)}: отклик только вручную на её странице"
         return app_row.status
     app_row.status = "sending"
     app_row.attempts += 1
@@ -667,6 +685,7 @@ async def autopilot_enqueue(session: AsyncSession, settings: Settings) -> list[i
             await session.execute(
                 select(Vacancy).where(
                     Vacancy.pipeline_status == "suitable",
+                    Vacancy.source == "hh",  # the queue sends through the hh.ru API only
                     Vacancy.hidden.is_(False),
                     Vacancy.score >= settings.apply_min_score_autopilot,
                     or_(Vacancy.snoozed_until.is_(None), Vacancy.snoozed_until <= utcnow()),
@@ -721,13 +740,14 @@ async def assist_open(session: AsyncSession, settings: Settings, vacancy: Vacanc
         queued_at=utcnow(),
     )
     session.add(app_row)
+    site = source_label(vacancy.source)
     vacancy.pipeline_status = "needs_manual"
-    vacancy.pipeline_reason = "откройте страницу отклика на hh.ru и подтвердите отправку"
+    vacancy.pipeline_reason = f"откройте страницу отклика на {site} и подтвердите отправку"
     await session.flush()
     await audit(
         session,
         "apply",
-        f"Открыта страница отклика на hh.ru: «{vacancy.name}»",
+        f"Открыта страница отклика на {site}: «{vacancy.name}»",
         vacancy_id=vacancy.id,
         application_id=app_row.id,
     )
@@ -749,7 +769,8 @@ async def assist_confirm(
             vacancy.pipeline_status = "sent"
             vacancy.pipeline_reason = None
         name = vacancy.name if vacancy else str(app_row.vacancy_id)
-        message = f"Пользователь подтвердил отклик на hh.ru: «{name}»"
+        site = source_label(vacancy.source if vacancy else None)
+        message = f"Пользователь подтвердил отклик на {site}: «{name}»"
         await audit(session, "apply", message, vacancy_id=app_row.vacancy_id, application_id=app_row.id)
         if not already and settings is not None:
             await _after_real_send(session, settings, app_row, vacancy)
@@ -813,6 +834,13 @@ STATUS_LABELS = {
 MODE_LABELS = {"api": "API", "assist": "вручную на hh.ru", "external": "вне панели"}
 
 
+def mode_label(mode: str, vacancy: Vacancy | None) -> str:
+    """«вручную на hh.ru», «вручную на HireHi» (the site of the vacancy), «API», «вне панели»."""
+    if mode == "assist" and vacancy is not None and not is_hh(vacancy):
+        return f"вручную на {source_label(vacancy.source)}"
+    return MODE_LABELS.get(mode, mode)
+
+
 def application_row(
     app_row: Application, vacancy: Vacancy | None, negotiation: Negotiation | None = None
 ) -> dict[str, Any]:
@@ -830,10 +858,11 @@ def application_row(
             {
                 "id": vacancy.id,
                 "hh_id": vacancy.hh_id,
+                "source": vacancy.source,
                 "name": vacancy.name,
                 "employer_name": vacancy.employer_name,
-                "alternate_url": vacancy.alternate_url,
-                "apply_alternate_url": vacancy.apply_alternate_url,
+                "alternate_url": vacancy_url(vacancy),
+                "apply_alternate_url": apply_url(vacancy),
                 "pipeline_status": vacancy.pipeline_status,
                 "score": vacancy.score,
             }
@@ -841,7 +870,7 @@ def application_row(
             else None
         ),
         "mode": app_row.mode,
-        "mode_label": MODE_LABELS.get(app_row.mode, app_row.mode),
+        "mode_label": mode_label(app_row.mode, vacancy),
         "status": app_row.status,
         "status_label": STATUS_LABELS.get(app_row.status, app_row.status),
         "letter_text": app_row.letter_text,

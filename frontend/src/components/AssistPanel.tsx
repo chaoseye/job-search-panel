@@ -3,7 +3,7 @@ import { Copy, ExternalLink, EyeOff } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { apiPost } from '../api/client'
 import type { ApplicationRow } from '../api/types'
-import { UNAVAILABLE_HINT } from '../lib/vacancyView'
+import { isHireHi, siteOf, unavailableHint } from '../lib/vacancyView'
 import { Button } from './ui/Button'
 import { Textarea } from './ui/Field'
 import { ErrorNotice } from './ui/States'
@@ -12,7 +12,8 @@ import { ErrorNotice } from './ui/States'
  *  response is cancelled and the vacancy hidden). */
 export type AssistResult = 'sent' | 'not_sent' | 'unavailable'
 
-/** Mode B: letter copied to the clipboard, hh.ru response page opened, the user confirms the result. */
+/** Mode B: letter copied to the clipboard, the response page opened (hh.ru, or the vacancy page of HireHi with its
+ *  «Отклик» button), the user confirms the result. */
 export default function AssistPanel({
   application,
   onDone,
@@ -35,6 +36,9 @@ export default function AssistPanel({
     onSuccess: () => onDone('unavailable'),
   })
   const busy = confirm.isPending || unavailable.isPending
+  // the site of the vacancy: the answer of «assist/open» says it, a reopened row knows it from its vacancy
+  const source = { source: application.source ?? application.vacancy?.source }
+  const site = siteOf(source)
 
   const copy = async () => {
     try {
@@ -52,9 +56,9 @@ export default function AssistPanel({
   }, [application.id])
 
   return (
-    <section aria-label="Отклик на hh.ru" className="rounded-lg border border-accent/25 bg-accent-soft p-4 sm:p-5">
+    <section aria-label={`Отклик на ${site}`} className="rounded-lg border border-accent/25 bg-accent-soft p-4 sm:p-5">
       <h2 className="text-[15px] font-semibold text-ink">
-        Отклик на hh.ru: {application.vacancy?.name}
+        Отклик на {site}: {application.vacancy?.name}
         {remaining !== undefined && remaining > 0 && <span className="ml-2 text-caption font-normal text-ink-3">ещё в очереди: {remaining}</span>}
       </h2>
       <ol className="mt-2 list-decimal space-y-1.5 pl-5 text-sm text-ink-2">
@@ -71,7 +75,14 @@ export default function AssistPanel({
           Письмо {copied === true ? 'скопировано в буфер обмена' : copied === false ? 'не удалось скопировать автоматически' : 'копируется…'}: вставьте его в поле сопроводительного письма
           (Ctrl+V).
         </li>
-        <li>Нажмите «Откликнуться» на hh.ru и подтвердите здесь.</li>
+        {isHireHi(source) ? (
+          <li>
+            На HireHi нажмите «Отклик» (нужен вход): откроется сайт работодателя, Telegram или почта. Отправьте письмо там и подтвердите
+            здесь.
+          </li>
+        ) : (
+          <li>Нажмите «Откликнуться» на hh.ru и подтвердите здесь.</li>
+        )}
       </ol>
       {application.letter_text && <Textarea className="mt-3 min-h-28 bg-surface" aria-label="Текст письма" readOnly value={application.letter_text} onFocus={(e) => e.currentTarget.select()} />}
       <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -81,7 +92,7 @@ export default function AssistPanel({
         <Button onClick={() => confirm.mutate(false)} disabled={busy}>
           Не отправил
         </Button>
-        <Button onClick={() => unavailable.mutate()} disabled={busy} title={UNAVAILABLE_HINT}>
+        <Button onClick={() => unavailable.mutate()} disabled={busy} title={unavailableHint(site)}>
           <EyeOff aria-hidden />
           Вакансия недоступна
         </Button>

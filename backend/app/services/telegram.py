@@ -318,7 +318,9 @@ async def deliver_pending(
             if event_type == "letter" and payloads and payloads[0].get("vacancy_id"):
                 from app.services.tg_letters import keyboard
 
-                reply_markup = keyboard(int(payloads[0]["vacancy_id"]), payloads[0].get("apply_url"))
+                reply_markup = keyboard(
+                    int(payloads[0]["vacancy_id"]), payloads[0].get("apply_url"), payloads[0].get("source")
+                )
             try:
                 result = await client.send_message(chat_id, text, reply_markup=reply_markup)
             except TelegramError as exc:

@@ -49,6 +49,7 @@ const BREAKDOWNS: [keyof StatsView['breakdowns'], string][] = [
   ['by_salary', 'По зарплате'],
   ['by_work_format', 'По формату'],
   ['by_area', 'По региону'],
+  ['by_source', 'По сайту'],
   ['by_weekday_hour', 'По дню и часу'],
 ]
 

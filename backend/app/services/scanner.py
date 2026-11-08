@@ -8,7 +8,7 @@ from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.base import as_utc, utcnow
@@ -18,6 +18,8 @@ from app.hh.client import HHClient
 from app.hh.errors import HHAuthError, HHCaptchaRequired, HHError, HHNotFound
 from app.hh.resume import NormalizedResume
 from app.hh.vacancy import VacancyData, merge_full, normalize_vacancy, storable_full, to_rur
+from app.hirehi.parse import SOURCE as HIREHI
+from app.hirehi.parse import vacancy_data as hirehi_data
 from app.services.audit import audit
 from app.services.dictionaries import currency_rates, dictionaries
 from app.services.jobs import FAILED_KEY
@@ -25,6 +27,7 @@ from app.services.preferences import Preferences
 from app.services.prescore import prescore
 from app.services.rules import RuleResult, RulesContext, apply_rules
 from app.services.searches import MAX_DEPTH, PAGE_SIZE, SearchParams, build_query
+from app.services.sources import is_hh
 from app.services.state import get_setting, get_system_state, read_capabilities, set_pause
 from app.services.tagging import rule_tags
 from app.services.textmatch import norm
@@ -85,6 +88,13 @@ def _loads(value: str | None, default: Any) -> Any:
 def vacancy_data_from_row(row: Vacancy) -> VacancyData:
     short_raw = _loads(row.raw_short_json, None)
     full_raw = _loads(row.raw_full_json, None)
+    if row.source == HIREHI:
+        # the listing item and the card of HireHi (app/hirehi/parse.py), not hh.ru JSON
+        if not isinstance(short_raw, dict) and not isinstance(full_raw, dict):
+            return VacancyData(hh_id="", name=row.name)
+        return hirehi_data(
+            short_raw if isinstance(short_raw, dict) else None, full_raw if isinstance(full_raw, dict) else None
+        )
     short = normalize_vacancy(short_raw, full=False) if isinstance(short_raw, dict) else None
     full = normalize_vacancy(full_raw, full=True) if isinstance(full_raw, dict) else None
     if short and full:
@@ -93,7 +103,14 @@ def vacancy_data_from_row(row: Vacancy) -> VacancyData:
         return full
     if short:
         return short
-    return VacancyData(hh_id=row.hh_id, name=row.name)
+    return VacancyData(hh_id=row.hh_id or "", name=row.name)
+
+
+def vacancy_ref(row: Vacancy) -> str:
+    """How a reason or the journal names another vacancy: the hh.ru number, «HireHi 218432» for HireHi."""
+    if row.source == HIREHI:
+        return f"HireHi {row.source_id}"
+    return row.hh_id or f"№{row.id}"
 
 
 def apply_data_to_row(row: Vacancy, v: VacancyData, rates: dict[str, float]) -> None:
@@ -277,6 +294,8 @@ async def upsert_short(
 async def search_path(session: AsyncSession, search: SavedSearch) -> str:
     """The hh.ru method of a saved search: the vacancy search, or the vacancies similar to the primary resume
     (RuntimeError when that one can not be asked). The scan and the refresh of the responses counter share it."""
+    if search.source == HIREHI:
+        raise RuntimeError("поиск HireHi читает задача «чтение HireHi», а не hh.ru")
     if search.source != "similar_to_resume":
         return "/vacancies"
     caps = read_capabilities(await get_system_state(session))
@@ -371,7 +390,8 @@ async def _watch_new(session: AsyncSession, ctx: ScanContext, search: SavedSearc
             "salary_from": row.salary_from,
             "salary_to": row.salary_to,
             "currency": row.salary_currency,
-            "url": row.alternate_url or f"https://hh.ru/vacancy/{row.hh_id}",
+            "url": row.alternate_url or (f"https://hh.ru/vacancy/{row.hh_id}" if row.hh_id else None),
+            "source": row.source,
             "search": search.name,
             "search_id": search.id,
         },
@@ -382,7 +402,10 @@ async def _watch_new(session: AsyncSession, ctx: ScanContext, search: SavedSearc
 
 
 async def fetch_full(client: HHClient, row: Vacancy) -> VacancyData | None:
-    """Returns merged data or None when the vacancy is gone (404)."""
+    """Returns merged data or None when the vacancy is gone (404). Only for a vacancy of hh.ru: a None here would
+    close a HireHi vacancy by an hh.ru 404 of a number it does not have."""
+    if not is_hh(row) or not row.hh_id:
+        raise ValueError(f"полная карточка hh.ru только у вакансии hh.ru, а не у {vacancy_ref(row)}")
     try:
         raw = await client.public(f"/vacancies/{row.hh_id}")
     except HHNotFound:
@@ -403,19 +426,35 @@ async def find_duplicate(session: AsyncSession, row: Vacancy) -> Vacancy | None:
 
     Closed (archived) twins do not count — after the freshness check a repost of a closed vacancy is a real new
     one; twins dropped by the rules do not count either (the rules will judge the new one the same way), nor do
-    twins parked by a watch-only search — nobody evaluated them, so a regular search must not inherit «дубль»."""
+    twins parked by a watch-only search — nobody evaluated them, so a regular search must not inherit «дубль».
+
+    The sources compare with each other: the employer is its hh.ru number — a HireHi vacancy has
+    it when HireHi took the company from hh.ru (the number is in its logo, app/hirehi/parse.py) — or, without one,
+    its name (case aside). The earlier vacancy stays, whatever its source."""
     if not row.name or not (row.employer_id or row.employer_name):
         return None
     stmt = select(Vacancy).where(Vacancy.id != row.id, Vacancy.archived.is_(False), Vacancy.id < row.id)
+    name = (row.employer_name or "").lower()
     if row.employer_id:
-        stmt = stmt.where(Vacancy.employer_id == row.employer_id)
+        by_employer: Any = Vacancy.employer_id == row.employer_id
+        if name:
+            # a HireHi vacancy of the same company whose logo had no hh.ru number (ux_vacancies_source_id narrows it)
+            by_employer = or_(
+                by_employer,
+                and_(
+                    Vacancy.source == HIREHI, Vacancy.employer_id.is_(None), func.lower(Vacancy.employer_name) == name
+                ),
+            )
+        stmt = stmt.where(by_employer)
     else:
-        stmt = stmt.where(Vacancy.employer_name == row.employer_name)
+        stmt = stmt.where(func.lower(Vacancy.employer_name) == name)
     name_key = norm(row.name)
     for twin in (await session.execute(stmt.order_by(Vacancy.id))).scalars():
         if norm(twin.name) != name_key or twin.pipeline_status in NOT_A_TWIN:
             continue
         if twin.duplicate_of_id:
+            if twin.duplicate_of_id == row.id:
+                continue  # a duplicate of this very vacancy (a HireHi row routed to it) is no twin of it
             original = await session.get(Vacancy, twin.duplicate_of_id)
             if original is not None and not original.archived and original.pipeline_status not in NOT_A_TWIN:
                 return original
@@ -433,10 +472,10 @@ async def process_vacancy(session: AsyncSession, client: HHClient, row: Vacancy,
         if twin is not None:
             row.duplicate_of_id = twin.id
             row.pipeline_status = "skipped"
-            row.pipeline_reason = f"дубль вакансии {twin.hh_id}: " + (
+            row.pipeline_reason = f"дубль вакансии {vacancy_ref(twin)}: " + (
                 "отклик уже отправлен" if twin.pipeline_status in APPLIED_STATUSES else "уже есть в базе"
             )
-            await audit(session, "vacancies", f"Дубль «{row.name}» → {twin.hh_id}", vacancy_id=row.id)
+            await audit(session, "vacancies", f"Дубль «{row.name}» → {vacancy_ref(twin)}", vacancy_id=row.id)
             return row.pipeline_status
     v = vacancy_data_from_row(row)
     if not row.user_override:
@@ -448,6 +487,12 @@ async def process_vacancy(session: AsyncSession, client: HHClient, row: Vacancy,
     needs_fetch = not row.raw_full_json or (
         row.full_fetched_at and utcnow() - (as_utc(row.full_fetched_at) or utcnow()) > FULL_REFRESH_AFTER
     )
+    if not is_hh(row):
+        # the card of another source comes from its own reader (services/hirehi.py) once the rules passed on the
+        # listing data; until then the vacancy waits as it is (`new`), hh.ru is never asked about it
+        if not row.raw_full_json:
+            return row.pipeline_status
+        needs_fetch = False
     if needs_fetch:
         await release_writes(session)  # no open write transaction across the hh request (one SQLite writer)
         try:
@@ -507,7 +552,8 @@ async def process_new(session: AsyncSession, client: HHClient, ctx: ScanContext,
         (
             await session.execute(
                 select(Vacancy)
-                .where(Vacancy.pipeline_status == "new")
+                # a HireHi vacancy is processed by its own reader (services/hirehi.py): it has no hh.ru card to fetch
+                .where(Vacancy.pipeline_status == "new", Vacancy.source == "hh")
                 .order_by(Vacancy.published_at.desc())
                 .limit(limit)
             )
@@ -537,7 +583,11 @@ async def process_new(session: AsyncSession, client: HHClient, ctx: ScanContext,
         else:
             stats["other"] += 1
         await session.flush()
-    remaining = (await session.execute(select(Vacancy.id).where(Vacancy.pipeline_status == "new").limit(1))).first()
+    remaining = (
+        await session.execute(
+            select(Vacancy.id).where(Vacancy.pipeline_status == "new", Vacancy.source == "hh").limit(1)
+        )
+    ).first()
     stats["pending_new"] = 1 if remaining else 0
     return stats
 
@@ -559,7 +609,8 @@ async def run_scan(runtime: Runtime, *, search_ids: list[int] | None = None, onl
         ctx.stats["first_run_period_days"] = settings.scan_first_run_period_days
         await session.commit()
 
-        query = select(SavedSearch).order_by(SavedSearch.id)
+        # the searches of HireHi are read by their own job (services/hirehi.py)
+        query = select(SavedSearch).where(SavedSearch.source != HIREHI).order_by(SavedSearch.id)
         if search_ids:
             query = query.where(SavedSearch.id.in_(search_ids))
         else:
@@ -683,6 +734,9 @@ async def reprocess_keeps_status(session: AsyncSession, row: Vacancy) -> bool:
 async def reprocess_vacancy(
     session: AsyncSession, client: HHClient, settings: Any, row: Vacancy, *, refetch: bool
 ) -> str:
+    """«Переоценить» of a vacancy of hh.ru (a HireHi one: services/hirehi.reprocess_vacancy)."""
+    if not is_hh(row):
+        raise ValueError(f"переоценка hh.ru не для {vacancy_ref(row)}")
     if row.archived and not refetch:
         # closed on hh.ru: the stored card predates the closing (it still reads «open»), the rules would pass on it and
         # the prescore would send the vacancy to Claude; only a fresh card (refetch) may bring it back
@@ -771,6 +825,9 @@ async def reprocess_all(
         stmt = select(Vacancy.id).where(Vacancy.pipeline_status.in_(statuses), Vacancy.hidden.is_(False))
         if not refetch:
             stmt = stmt.where(Vacancy.archived.is_(False))
+        else:
+            # a closed HireHi vacancy could only come back by its card, and HireHi cards are not re-read in bulk
+            stmt = stmt.where(or_(Vacancy.source == "hh", Vacancy.archived.is_(False)))
         if scoped and profile_id is None:
             stmt = stmt.where(Vacancy.selection_profile_id.is_(None))
         elif scoped:
@@ -803,13 +860,19 @@ async def reprocess_all(
             if row is None:
                 continue
             row_ctx = await context_for(session, client, settings, ctx, row.selection_profile_id)
-            if refetch:
+            if refetch and is_hh(row):
                 row.raw_full_json = None
                 row.full_fetched_at = None
             row.pipeline_status = "new"
             row.pipeline_reason = None
             try:
-                status = await process_vacancy(session, client, row, row_ctx)
+                if row.source == HIREHI:
+                    # the stored card of HireHi (no request to it in bulk); a vacancy of hh.ru goes the hh.ru route
+                    from app.services.hirehi import process_row
+
+                    status = await process_row(session, settings, client, row, row_ctx)
+                else:
+                    status = await process_vacancy(session, client, row, row_ctx)
             except (HHAuthError, HHCaptchaRequired) as exc:
                 summary["aborted"] = exc.summary()
                 if isinstance(exc, HHCaptchaRequired):
@@ -818,7 +881,7 @@ async def reprocess_all(
                 break
             except HHError as exc:
                 summary["errors"] += 1
-                log.warning("reprocess_failed", vacancy=row.hh_id, error=exc.summary())
+                log.warning("reprocess_failed", vacancy=vacancy_ref(row), error=exc.summary())
                 status = row.pipeline_status
             summary["processed"] += 1
             summary["by_status"][status] = summary["by_status"].get(status, 0) + 1

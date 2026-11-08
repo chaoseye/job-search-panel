@@ -75,6 +75,26 @@ export function formatsShort(v: Pick<VacancyRow, 'work_format_ids' | 'work_forma
 /** «Вакансия недоступна» in the response flow (the assistant's panel, the board): what the button does. */
 export const UNAVAILABLE_HINT = 'hh.ru пишет, что вакансия недоступна: отклик отменится, вакансия уйдёт в «Скрытые»'
 
+/** The site of a vacancy: hh.ru or HireHi. Rows without the field are hh.ru (older answers). */
+export function siteOf(v: { source?: string | null; source_label?: string | null } | null | undefined): string {
+  if (v?.source_label) return v.source_label
+  return v?.source === 'hirehi' ? 'HireHi' : 'hh.ru'
+}
+
+export function isHireHi(v: { source?: string | null } | null | undefined): boolean {
+  return v?.source === 'hirehi'
+}
+
+/** UNAVAILABLE_HINT for the site of the vacancy. */
+export function unavailableHint(site: string): string {
+  return UNAVAILABLE_HINT.replace('hh.ru', site)
+}
+
+/** How a response to a HireHi vacancy goes: the original link is given by HireHi to a signed-in user only. */
+export function hirehiApplyHint(label: string | null | undefined): string {
+  return `Отклик — на странице HireHi: кнопка «${label || 'Отклик'}» откроет сайт работодателя, Telegram или почту. Нужен вход на HireHi.`
+}
+
 /** Marks that change how to apply. «Без зарплаты» is not one: the salary column already shows a dash. */
 export function rowFlags(flags: string[]): { key: string; label: string }[] {
   const out: { key: string; label: string }[] = []

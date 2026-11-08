@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,6 +13,7 @@ from app.db.base import as_utc
 from app.db.models import SavedSearch, Vacancy
 from app.hh.client import HHClient
 from app.hh.vacancy import VacancyData, normalize_vacancy
+from app.hirehi.parse import HireHiParams
 from app.services.audit import audit
 
 MAX_DEPTH = 2000
@@ -151,8 +152,11 @@ class SearchInput(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     name: str = Field(..., min_length=1, max_length=200)
-    source: Literal["search", "similar_to_resume"] = "search"
+    source: Literal["search", "similar_to_resume", "hirehi"] = "search"
     params: SearchParams = Field(default_factory=SearchParams)
+    # a search of HireHi (source = hirehi): the filters of the site and the words of the panel; stored in
+    # params_json instead of the hh.ru parameters
+    hirehi: HireHiParams | None = None
     interval_min: int = Field(30, ge=10, le=1440)
     enabled: bool = True
     # named selection-criteria set (None = base questionnaire)
@@ -160,9 +164,23 @@ class SearchInput(BaseModel):
     # tracking only: new vacancies go to the bot as links (event search_new), nothing is evaluated
     watch_only: bool = False
 
+    @model_validator(mode="after")
+    def _hirehi(self) -> SearchInput:
+        """HireHi is read at most once an hour (services/hirehi.SEARCH_MIN_INTERVAL)."""
+        if self.source == "hirehi":
+            self.hirehi = self.hirehi or HireHiParams()
+            self.interval_min = max(self.interval_min, 60)
+        return self
+
+    def stored_params(self) -> str:
+        if self.source == "hirehi":
+            return (self.hirehi or HireHiParams()).model_dump_json()
+        return self.params.model_dump_json()
+
 
 def search_row(s: SavedSearch, profile_names: dict[int, str] | None = None) -> dict[str, Any]:
-    params = SearchParams.model_validate_json(s.params_json or "{}")
+    hirehi = _hirehi_params(s) if s.source == "hirehi" else None
+    params = SearchParams() if hirehi is not None else SearchParams.model_validate_json(s.params_json or "{}")
     names = profile_names or {}
 
     def iso(dt: datetime | None) -> str | None:
@@ -174,7 +192,8 @@ def search_row(s: SavedSearch, profile_names: dict[int, str] | None = None) -> d
         "name": s.name,
         "source": s.source,
         "params": params.model_dump(),
-        "summary": params.summary(),
+        "hirehi": hirehi.model_dump() if hirehi is not None else None,
+        "summary": hirehi.summary() if hirehi is not None else params.summary(),
         "interval_min": s.interval_min,
         "enabled": s.enabled,
         "watch_only": bool(s.watch_only),
@@ -191,6 +210,13 @@ def search_row(s: SavedSearch, profile_names: dict[int, str] | None = None) -> d
     }
 
 
+def _hirehi_params(s: SavedSearch) -> HireHiParams:
+    try:
+        return HireHiParams.model_validate_json(s.params_json or "{}")
+    except ValueError:  # a value the site no longer has: the form shows the search without it
+        return HireHiParams()
+
+
 async def list_searches(session: AsyncSession) -> list[SavedSearch]:
     return list((await session.execute(select(SavedSearch).order_by(SavedSearch.id))).scalars().all())
 
@@ -199,7 +225,7 @@ async def create_search(session: AsyncSession, data: SearchInput) -> SavedSearch
     row = SavedSearch(
         name=data.name.strip(),
         source=data.source,
-        params_json=data.params.model_dump_json(),
+        params_json=data.stored_params(),
         interval_min=data.interval_min,
         enabled=data.enabled,
         watch_only=data.watch_only,
@@ -216,7 +242,7 @@ async def update_search(session: AsyncSession, row: SavedSearch, data: SearchInp
     old_profile = row.selection_profile_id
     row.name = data.name.strip()
     row.source = data.source
-    row.params_json = data.params.model_dump_json()
+    row.params_json = data.stored_params()
     row.interval_min = data.interval_min
     row.enabled = data.enabled
     row.watch_only = data.watch_only

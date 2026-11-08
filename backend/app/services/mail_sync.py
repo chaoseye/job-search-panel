@@ -226,7 +226,8 @@ async def _sent_applications(session: AsyncSession) -> list[tuple[Application, V
         await session.execute(
             select(Application, Vacancy)
             .join(Vacancy, Vacancy.id == Application.vacancy_id)
-            .where(Application.status == "sent", Application.dry_run.is_(False))
+            # the mails of hh.ru are about its responses: a response to a HireHi vacancy went to another site
+            .where(Application.status == "sent", Application.dry_run.is_(False), Vacancy.source == "hh")
             .order_by(Application.sent_at.desc())
         )
     ).all()

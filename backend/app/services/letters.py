@@ -213,9 +213,9 @@ class RevisionRefused(ValueError):
 
 async def request_revision(session: AsyncSession, vacancy: Vacancy, comment: str) -> LetterRevisionRequest:
     if vacancy.archived:
-        from app.services.vacancies import BACK_BY_LINK, CLOSED_ON_HH  # services.vacancies imports this module
+        from app.services.vacancies import back_hint, closed_text  # services.vacancies imports this module
 
-        raise RevisionRefused(f"{CLOSED_ON_HH}, новое письмо не нужно. {BACK_BY_LINK}")
+        raise RevisionRefused(f"{closed_text(vacancy)}, новое письмо не нужно. {back_hint(vacancy)}")
     comment = comment.strip()
     if not comment:
         raise ValueError("укажите, что изменить в письме")

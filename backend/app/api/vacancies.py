@@ -436,6 +436,21 @@ async def reprocess(
     refetch: bool = True,
 ) -> dict[str, Any]:
     row = await _get(session, vacancy_id)
+    if row.source == "hirehi":
+        # its card is read again on HireHi (one request), then the rules of the panel; a vacancy of hh.ru → hh.ru
+        from app.services import hirehi
+
+        try:
+            await hirehi.reprocess_vacancy(runtime, session, row, refetch=refetch)
+        except hirehi.HireHiError as exc:
+            await session.commit()
+            status = 409 if isinstance(exc, hirehi.HireHiBlocked) else 502
+            raise HTTPException(status_code=status, detail=f"HireHi: {exc}") from exc
+        except HHError as exc:
+            await session.commit()
+            raise HTTPException(status_code=502, detail=f"hh.ru: {exc.summary()}") from exc
+        await session.commit()
+        return await svc.vacancy_detail(session, row)
     try:
         await reprocess_vacancy(session, runtime.hh_client(), runtime.settings, row, refetch=refetch)
     except HHError as exc:

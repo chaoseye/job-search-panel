@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_runtime, get_session
 from app.db.models import SavedSearch
 from app.hh.errors import HHError
+from app.hirehi.parse import HireHiParams
 from app.runtime import Runtime
 from app.services import searches as svc
 from app.services.dictionaries import search_form_options
@@ -27,6 +28,12 @@ def _suggest_items(items: Any) -> list[dict[str, str]]:
         if isinstance(i, dict) and i.get("id"):
             out.append({"id": str(i["id"]), "name": str(i.get("text") or i.get("name") or "")})
     return out
+
+
+def _check_hirehi(body: svc.SearchInput) -> None:
+    problem = body.hirehi.problem() if body.source == "hirehi" and body.hirehi is not None else None
+    if problem:
+        raise HTTPException(status_code=422, detail=problem)
 
 
 async def _get(session: AsyncSession, search_id: int) -> SavedSearch:
@@ -50,6 +57,7 @@ async def create_search(
 ) -> dict[str, Any]:
     from app.services.selection import profile_names
 
+    _check_hirehi(body)
     row = await svc.create_search(session, body)
     await session.commit()
     return svc.search_row(row, await profile_names(session))
@@ -62,6 +70,7 @@ async def update_search(
     from app.services.selection import profile_names
 
     row = await _get(session, search_id)
+    _check_hirehi(body)
     await svc.update_search(session, row, body)
     await session.commit()
     return svc.search_row(row, await profile_names(session))
@@ -81,7 +90,18 @@ async def run_search(
     runtime: Annotated[Runtime, Depends(get_runtime)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
-    await _get(session, search_id)
+    row = await _get(session, search_id)
+    if row.source == "hirehi":
+        # read by the job of HireHi; no hh.ru sign-in needed
+        from app.services.hirehi import JOB, sync_hirehi
+
+        try:
+            run_id = await runtime.jobs.start(
+                JOB, lambda: sync_hirehi(runtime, search_ids=[search_id], only_due=False, check=False)
+            )
+        except JobBusy as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"job_run_id": run_id}
     if not auth_public_state(await get_hh_auth(session))["logged_in"]:
         raise HTTPException(status_code=400, detail="Сначала войдите в hh.ru")
     try:
@@ -92,8 +112,10 @@ async def run_search(
 
 
 class PreviewRequest(BaseModel):
-    params: svc.SearchParams
+    params: svc.SearchParams = Field(default_factory=svc.SearchParams)
     source: str = "search"
+    # the filters of a HireHi search (source = hirehi)
+    hirehi: HireHiParams | None = None
     # hh pages of the preview: the form shows the first ten, scripts may read more
     page: int = Field(0, ge=0, le=19)
     per_page: int = Field(10, ge=1, le=100)
@@ -105,6 +127,19 @@ async def preview_search(
     runtime: Annotated[Runtime, Depends(get_runtime)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
+    if body.source == "hirehi":
+        # one listing page of HireHi, nothing stored (robots.txt, the pause and the refusal rules of the reader)
+        from app.services import hirehi
+
+        params = body.hirehi or HireHiParams()
+        if params.problem():
+            raise HTTPException(status_code=422, detail=params.problem())
+        try:
+            return await hirehi.preview(runtime, params, page=body.page + 1)
+        except hirehi.HireHiBlocked as exc:
+            raise HTTPException(status_code=409, detail=f"HireHi: {exc}") from exc
+        except hirehi.HireHiError as exc:
+            raise HTTPException(status_code=502, detail=f"HireHi: {exc}") from exc
     if not auth_public_state(await get_hh_auth(session))["logged_in"]:
         raise HTTPException(status_code=400, detail="Сначала войдите в hh.ru")
     path = "/vacancies"
@@ -120,6 +155,14 @@ async def preview_search(
         return await svc.preview(runtime.hh_client(), body.params, path=path, page=body.page, per_page=body.per_page)
     except HHError as exc:
         raise HTTPException(status_code=502, detail=f"hh.ru: {exc.summary()}") from exc
+
+
+@router.get("/hirehi/options")
+async def hirehi_options(session: Annotated[AsyncSession, Depends(get_session)]) -> dict[str, Any]:
+    """What the form of a HireHi search offers, and whether HireHi refuses the panel right now."""
+    from app.services import hirehi
+
+    return {**hirehi.options(), "state": await hirehi.state_view(session)}
 
 
 @router.get("/options")

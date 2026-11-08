@@ -39,6 +39,7 @@ from app.services.preferences import get_preferences
 from app.services.profile import active_profile
 from app.services.relocate import local_path
 from app.services.rules import looks_like_agency
+from app.services.sources import source_label, vacancy_key, vacancy_url
 
 log = structlog.get_logger("exchange.packets")
 
@@ -91,7 +92,9 @@ def packet_vacancy(row: Vacancy, max_chars: int) -> PacketVacancy:
             )
     published = as_utc(row.published_at)
     return PacketVacancy(
-        id=row.hh_id,
+        # the hh.ru number, `hirehi-<id>` for a HireHi vacancy (services/sources.vacancy_key): the result comes back
+        # under it
+        id=vacancy_key(row),
         name=row.name,
         employer={
             "name": row.employer_name,
@@ -112,7 +115,7 @@ def packet_vacancy(row: Vacancy, max_chars: int) -> PacketVacancy:
         professional_roles=_loads(row.professional_roles_json, []),
         responses_count=row.responses_count,
         published_at=published.isoformat(timespec="seconds") if published else None,
-        alternate_url=row.alternate_url,
+        alternate_url=vacancy_url(row),
         response_letter_required=row.response_letter_required,
         has_test=row.has_test,
         description=description,
@@ -199,7 +202,7 @@ async def _revision_tasks(session: AsyncSession, max_chars: int) -> list[tuple[P
             await audit(
                 session,
                 "letters",
-                f"Переработка письма отменена: вакансия закрыта на hh.ru «{vacancy.name}»",
+                f"Переработка письма отменена: вакансия закрыта на {source_label(vacancy.source)} «{vacancy.name}»",
                 vacancy_id=vacancy.id,
             )
             continue
@@ -429,11 +432,12 @@ async def _question_tasks(session: AsyncSession, max_chars: int) -> list[tuple[P
             continue
         if vacancy.archived:  # asked before the vacancy closed on hh.ru: its form takes no response now
             req.status = "cancelled"
-            req.error = "вакансия закрыта на hh.ru"
+            req.error = f"вакансия закрыта на {source_label(vacancy.source)}"
             await audit(
                 session,
                 "batches",
-                f"Ответы на вопросы работодателя отменены: вакансия закрыта на hh.ru «{vacancy.name}»",
+                f"Ответы на вопросы работодателя отменены: вакансия закрыта на {source_label(vacancy.source)} "
+                f"«{vacancy.name}»",
                 vacancy_id=vacancy.id,
             )
             continue

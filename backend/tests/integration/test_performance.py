@@ -108,7 +108,10 @@ def test_layout_migration_keeps_every_value(tmp_path) -> None:  # type: ignore[n
     after = con.execute(f"select {', '.join(names_before)} from vacancies").fetchall()
     unique = con.execute("select sql from sqlite_master where name = 'vacancies'").fetchone()[0]
     con.close()
-    assert after == before and sorted(names_after) == sorted(names_before) and names_after[-4:] == LARGE
+    # 0032 adds the source of the vacancy (before the large columns, like everything filtered on)
+    added = ["source", "source_id"]
+    assert after == before and sorted(names_after) == sorted(names_before + added) and names_after[-4:] == LARGE
+    assert names_after[-6:-4] == added
     assert "UNIQUE (hh_id)" in unique
     command.downgrade(cfg, "0020_claude_attempts")  # the indexes go, the rows stay
     command.upgrade(cfg, "head")

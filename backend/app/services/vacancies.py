@@ -34,6 +34,7 @@ from app.services.letters import (
 from app.services.preferences import get_preferences
 from app.services.profile import active_profile
 from app.services.questions import list_answers
+from app.services.sources import apply_url, is_hh, source_label, vacancy_url
 from app.services.tagging import load_tags, merge_tags
 from app.services.textmatch import terms_equal
 
@@ -201,6 +202,13 @@ def _iso(dt: datetime | None) -> str | None:
     return d.isoformat(timespec="seconds") if d else None
 
 
+def status_label(row: Vacancy) -> str:
+    """The status in words; the manual step names the site of the vacancy («нужно действие на HireHi»)."""
+    if row.pipeline_status == "needs_manual":
+        return f"нужно действие на {source_label(row.source)}"
+    return STATUS_LABELS.get(row.pipeline_status, row.pipeline_status)
+
+
 def _search_ids(row: Vacancy) -> list[int]:
     return [int(x) for x in (row.source_search_ids or "").split(",") if x.strip().isdigit()]
 
@@ -217,6 +225,10 @@ def vacancy_row(
     return {
         "id": row.id,
         "hh_id": row.hh_id,
+        # where the vacancy lives (hh | hirehi) and its number there; the list and the card show the site
+        "source": row.source,
+        "source_id": row.source_id,
+        "source_label": source_label(row.source),
         "name": row.name,
         "employer": {
             "id": row.employer_id,
@@ -246,7 +258,7 @@ def vacancy_row(
         "sources": [search_names.get(i, f"#{i}") for i in _search_ids(row)],
         "flags": flags,
         "pipeline_status": row.pipeline_status,
-        "status_label": STATUS_LABELS.get(row.pipeline_status, row.pipeline_status),
+        "status_label": status_label(row),
         "pipeline_reason": row.pipeline_reason,
         "prescore": row.prescore,
         "score": row.score,
@@ -255,8 +267,8 @@ def vacancy_row(
         "batch_id": row.batch_id,
         "selection_profile_id": row.selection_profile_id,
         "selection_profile_name": pnames.get(row.selection_profile_id) if row.selection_profile_id else None,
-        "alternate_url": row.alternate_url,
-        "apply_alternate_url": row.apply_alternate_url,
+        "alternate_url": vacancy_url(row),
+        "apply_alternate_url": apply_url(row),
         "is_new": row.seen_by_user_at is None,
         "snoozed_until": _iso(row.snoozed_until),
         "hidden": row.hidden,
@@ -549,6 +561,8 @@ async def vacancy_detail(session: AsyncSession, row: Vacancy) -> dict[str, Any]:
             "test_required": row.test_required,
             "type_id": row.type_id,
             "response_url": row.response_url,
+            # the text of the apply button of the HireHi card («Отклик на hh», «Отклик»): where it goes
+            "source_apply_label": source_apply_label(row),
             "full_fetched_at": _iso(row.full_fetched_at),
             "skip_reason": row.skip_reason,
             "question_answers": await list_answers(session, row.id),
@@ -701,6 +715,30 @@ UNAVAILABLE_REASON = "недоступна на hh.ru (отметил польз
 # ссылке» of the compact view, «Добавить вакансии по ссылкам» of the classic one), a repost is a new vacancy anyway
 CLOSED_ON_HH = "Вакансия закрыта на hh.ru: откликнуться на неё нельзя"
 BACK_BY_LINK = "Если работодатель откроет её снова, добавьте её по ссылке на hh.ru: панель заново загрузит карточку"
+# the same for a HireHi vacancy (closed when its page is gone or its term passed): «Переоценить» reads the
+# card again
+BACK_ON_HIREHI = "Если вакансия снова появится на HireHi, нажмите «Переоценить»: панель заново прочитает её карточку"
+
+
+def closed_text(row: Vacancy) -> str:
+    """«Вакансия закрыта на <site>: откликнуться на неё нельзя»."""
+    return CLOSED_ON_HH if is_hh(row) else CLOSED_ON_HH.replace("hh.ru", source_label(row.source))
+
+
+def back_hint(row: Vacancy) -> str:
+    """How a closed vacancy comes back: by a link of hh.ru, by «Переоценить» for HireHi."""
+    return BACK_BY_LINK if is_hh(row) else BACK_ON_HIREHI
+
+
+def source_apply_label(row: Vacancy) -> str | None:
+    """The apply button of the HireHi card, as stored («Отклик на hh», «Отклик»); None for hh.ru."""
+    if is_hh(row) or not row.raw_full_json:
+        return None
+    full = _loads(row.raw_full_json, {})
+    label = full.get("apply_label") if isinstance(full, dict) else None
+    return str(label) if label else None
+
+
 # responses that have not gone yet: the open page of the assistant (or a manual step hh asked for) and the API queue
 OPEN_RESPONSE_STATUSES = ("needs_manual", "queued")
 
@@ -756,11 +794,12 @@ async def mark_unavailable(session: AsyncSession, row: Vacancy) -> int:
     ).scalar_one_or_none()
     if sent is not None or row.pipeline_status in ("sent", ALREADY_ON_HH):
         raise VacancyActionError("Отклик по вакансии уже отправлен, отмечать её недоступной не нужно")
-    cancelled = await cancel_open_responses(session, row, "недоступна на hh.ru")
+    site = source_label(row.source)
+    cancelled = await cancel_open_responses(session, row, f"недоступна на {site}")
     row.hidden = True
     row.pipeline_status = "hidden"
-    row.pipeline_reason = UNAVAILABLE_REASON
-    await audit(session, "vacancies", f"Недоступна на hh.ru, скрыта «{row.name}»", vacancy_id=row.id)
+    row.pipeline_reason = UNAVAILABLE_REASON.replace("hh.ru", site)
+    await audit(session, "vacancies", f"Недоступна на {site}, скрыта «{row.name}»", vacancy_id=row.id)
     await _resolve_bot_message(session, row, "hidden")
     return cancelled
 
@@ -775,7 +814,7 @@ async def restore(session: AsyncSession, row: Vacancy, settings: Settings | None
     if row.pipeline_status == ALREADY_ON_HH:
         raise VacancyActionError("На hh.ru по вакансии уже есть отклик — вернуть её в кандидаты нельзя")
     if row.archived and await open_application(session, row.id) is None:
-        raise VacancyActionError(f"{CLOSED_ON_HH}, поэтому в кандидаты она не вернётся. {BACK_BY_LINK}")
+        raise VacancyActionError(f"{closed_text(row)}, поэтому в кандидаты она не вернётся. {back_hint(row)}")
     fallback = "prescored" if row.prescore is not None else "new"
     row.hidden = False
     row.snoozed_until = None
@@ -871,14 +910,15 @@ async def to_batch(session: AsyncSession, row: Vacancy) -> None:
         return
     app_row = await open_application(session, row.id)
     if app_row is not None:
-        stage = {"sent": "отправлен", "needs_manual": "открыт на hh.ru и ждёт подтверждения"}.get(
-            app_row.status, "в очереди на отправку"
-        )
+        stage = {
+            "sent": "отправлен",
+            "needs_manual": f"открыт на {source_label(row.source)} и ждёт подтверждения",
+        }.get(app_row.status, "в очереди на отправку")
         raise VacancyActionError(f"По вакансии уже есть отклик ({stage}) — новый разбор и письмо не нужны")
     if row.pipeline_status == ALREADY_ON_HH:
         raise VacancyActionError("На hh.ru по вакансии уже есть отклик — новый разбор и письмо не нужны")
     if row.archived:
-        raise VacancyActionError(f"{CLOSED_ON_HH}, разбор и письмо не нужны. {BACK_BY_LINK}")
+        raise VacancyActionError(f"{closed_text(row)}, разбор и письмо не нужны. {back_hint(row)}")
     if row.pipeline_status in ("filtered_out", "not_suitable", "skipped", "hidden", "needs_manual"):
         row.user_override = True
     row.hidden = False

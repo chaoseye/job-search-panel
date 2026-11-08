@@ -8,6 +8,8 @@ import {
   filterChips,
   freshHint,
   freshLabel,
+  hirehiApplyHint,
+  isHireHi,
   pipelineOf,
   responsesHint,
   responsesLabel,
@@ -15,7 +17,9 @@ import {
   rowStatus,
   salaryPublished,
   scopeEmpty,
+  siteOf,
   staleText,
+  unavailableHint,
 } from './vacancyView'
 
 const sp = (s: string | null) => s?.replace(/\s/g, ' ') ?? null // ru-RU groups thousands with a (narrow) no-break space
@@ -240,5 +244,27 @@ describe('pipelineOf', () => {
 
   it('marks every step done once the response is out', () => {
     expect(pipelineOf({ pipeline_status: 'sent', score: 80, letter_status: 'ready' }).steps.every((s) => s.state === 'done')).toBe(true)
+  })
+})
+
+describe('the site of a vacancy', () => {
+  it('is hh.ru for a row without a source and HireHi for the rows of HireHi', () => {
+    expect(siteOf({})).toBe('hh.ru')
+    expect(siteOf(null)).toBe('hh.ru')
+    expect(siteOf({ source: 'hh' })).toBe('hh.ru')
+    expect(siteOf({ source: 'hirehi' })).toBe('HireHi')
+    expect(siteOf({ source: 'hirehi', source_label: 'HireHi' })).toBe('HireHi')
+    expect(isHireHi({ source: 'hirehi' })).toBe(true)
+    expect(isHireHi({ source: 'hh' })).toBe(false)
+    expect(isHireHi(undefined)).toBe(false)
+  })
+
+  it('names the site in the hints', () => {
+    expect(unavailableHint('HireHi')).toBe('HireHi пишет, что вакансия недоступна: отклик отменится, вакансия уйдёт в «Скрытые»')
+    expect(unavailableHint('hh.ru')).toMatch(/^hh\.ru пишет/)
+    // the button of the card is named as the site names it, «Отклик» when the card did not say
+    expect(hirehiApplyHint('Откликнуться')).toContain('кнопка «Откликнуться»')
+    expect(hirehiApplyHint(null)).toContain('кнопка «Отклик»')
+    expect(hirehiApplyHint(null)).toContain('Нужен вход на HireHi')
   })
 })

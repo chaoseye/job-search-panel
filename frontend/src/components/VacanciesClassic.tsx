@@ -12,6 +12,7 @@ import {
   freshHint,
   freshLabel,
   GROUP_LABEL,
+  isHireHi,
   letterBadge,
   responsesHint,
   rowFlags,
@@ -394,8 +395,13 @@ function ClassicRow({ v, active, checked, onToggle, onOpen }: { v: VacancyRow; a
             >
               {v.name}
             </button>
-            {(flags.length > 0 || v.duplicate_of_id !== null) && (
+            {(flags.length > 0 || v.duplicate_of_id !== null || isHireHi(v)) && (
               <div className="mt-1 flex flex-wrap gap-1">
+                {isHireHi(v) && (
+                  <Badge tone="info" title="Вакансия с HireHi: отклик — на её странице на HireHi">
+                    HireHi
+                  </Badge>
+                )}
                 {flags.map((f) => (
                   <Badge key={f.key} tone="warn">
                     {f.label}

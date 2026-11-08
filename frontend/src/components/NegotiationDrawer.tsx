@@ -4,6 +4,7 @@ import { useState, type ReactNode } from 'react'
 import { apiDelete, apiGet, apiPost } from '../api/client'
 import type { ApplicationRow, InterviewPrepView, NegotiationDetail, ReplyDraftView } from '../api/types'
 import { formatDateTime, plural, relativeTime } from '../lib/format'
+import { isHireHi, siteOf } from '../lib/vacancyView'
 import { Badge, type BadgeTone } from './ui/Badge'
 import { Button, buttonClass } from './ui/Button'
 import { cx } from './ui/cx'
@@ -34,7 +35,8 @@ type TabId = 'chat' | 'prep' | 'letter' | 'history'
 
 /** Side sheet with the hh.ru negotiation of a response (F-8.9.4/8.9.5): its state and dates, the messages (read only,
  *  or a manual journal when hh.ru does not give them to the app), a reply draft and an interview prep from Claude, the
- *  letter that went out and the history. */
+ *  letter that went out and the history. A response to a HireHi vacancy has the manual journal only: HireHi gives no
+ *  statuses, the employer answers on its own site, in Telegram or by mail. */
 export default function NegotiationDrawer({ application: initial, onClose }: { application: ApplicationRow; onClose: () => void }) {
   const qc = useQueryClient()
   // the manual journal attaches a negotiation to the application on first use: keep the fresh row locally
@@ -71,7 +73,7 @@ export default function NegotiationDrawer({ application: initial, onClose }: { a
         <div className="ml-auto flex items-center gap-1">
           {neg?.page_url && (
             <a className={buttonClass('ghost', 'sm')} href={neg.page_url} target="_blank" rel="noreferrer">
-              hh.ru
+              {siteOf(v)}
               <ExternalLink aria-hidden />
             </a>
           )}
@@ -168,6 +170,8 @@ function ChatTab({ application, onApplication, detail }: { application: Applicat
   const neg = detail?.negotiation ?? application.negotiation
   const manual = Boolean(neg?.manual)
   const canRecord = application.status === 'sent' && (!neg || manual)
+  // no hh.ru behind a response to a HireHi vacancy: nothing syncs, the employer answers on its own site
+  const hirehi = isHireHi(application.vacancy)
 
   const [mState, setMState] = useState('')
   const [mViewed, setMViewed] = useState(false)
@@ -226,11 +230,14 @@ function ChatTab({ application, onApplication, detail }: { application: Applicat
 
   return (
     <div className="space-y-6">
-      {!neg && !canRecord && <Notice title="Данных hh.ru по этому отклику ещё нет">Они появятся после синхронизации: она идёт каждые несколько минут, или нажмите «Синхронизировать» на странице откликов.</Notice>}
+      {!neg && !canRecord && !hirehi && <Notice title="Данных hh.ru по этому отклику ещё нет">Они появятся после синхронизации: она идёт каждые несколько минут, или нажмите «Синхронизировать» на странице откликов.</Notice>}
+      {!neg && !canRecord && hirehi && (
+        <Notice title="HireHi не передаёт статусы откликов">Когда отклик уйдёт и вы подтвердите его, ответы работодателя можно будет записывать здесь вручную.</Notice>
+      )}
 
       {neg && (
         <dl className="grid grid-cols-[minmax(0,10rem)_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-caption">
-          <Row label="Создан на hh.ru">{formatDateTime(neg.hh_created_at)}</Row>
+          <Row label={hirehi ? 'Отправлен' : 'Создан на hh.ru'}>{formatDateTime(neg.hh_created_at)}</Row>
           <Row label="Обновлён">{formatDateTime(neg.hh_updated_at)}</Row>
           <Row label="Просмотрен">{neg.first_viewed_at ? formatDateTime(neg.first_viewed_at) : '—'}</Row>
           <Row label="Первая реакция">{neg.first_reaction_at ? formatDateTime(neg.first_reaction_at) : '—'}</Row>
@@ -244,8 +251,10 @@ function ChatTab({ application, onApplication, detail }: { application: Applicat
       {canRecord && (
         <Section title="Ручной журнал: что ответил работодатель">
           <p className="text-caption text-ink-2">
-            hh.ru не даёт вашему приложению статусы и переписку, поэтому запишите здесь то, что видите на hh.ru: просмотр, приглашение или отказ, вопросы работодателя. Записи попадут в фильтры,
-            статистику и в черновик ответа для Claude.
+            {hirehi
+              ? 'Отклик ушёл не через hh.ru: работодатель ответит на своём сайте, в Telegram или на почту. Запишите здесь, что он ответил: просмотр, приглашение или отказ, вопросы.'
+              : 'hh.ru не даёт вашему приложению статусы и переписку, поэтому запишите здесь то, что видите на hh.ru: просмотр, приглашение или отказ, вопросы работодателя.'}{' '}
+            Записи попадут в фильтры, статистику и в черновик ответа для Claude.
           </p>
           <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
             <Select aria-label="Статус отклика" wrapperClassName="w-auto min-w-56" value={mState} onChange={(e) => setMState(e.target.value)}>
@@ -321,14 +330,21 @@ function ChatTab({ application, onApplication, detail }: { application: Applicat
             })}
           </ul>
           <p className="text-caption text-ink-3">
-            {manual ? 'Панель ничего не отправляет на hh.ru: отвечайте там, а свой ответ при желании запишите сюда как «Мой ответ».' : 'Панель только читает переписку, отвечать нужно на hh.ru.'}
+            {hirehi
+              ? 'Панель ничего не отправляет работодателю: отвечайте там, где он написал, а свой ответ при желании запишите сюда как «Мой ответ».'
+              : manual
+                ? 'Панель ничего не отправляет на hh.ru: отвечайте там, а свой ответ при желании запишите сюда как «Мой ответ».'
+                : 'Панель только читает переписку, отвечать нужно на hh.ru.'}
           </p>
         </Section>
       )}
 
       {neg && (
         <Section title="Черновик ответа через Claude">
-          <p className="text-caption text-ink-2">Панель положит переписку в следующий пакет для /hh-batch, после разбора черновик появится здесь. Отправлять ответ нужно самому на hh.ru.</p>
+          <p className="text-caption text-ink-2">
+            Панель положит переписку в следующий пакет для /hh-batch, после разбора черновик появится здесь.{' '}
+            {hirehi ? 'Отправлять ответ нужно самому — там, где написал работодатель.' : 'Отправлять ответ нужно самому на hh.ru.'}
+          </p>
           <form
             className="flex flex-col gap-2 sm:flex-row"
             onSubmit={(e) => {

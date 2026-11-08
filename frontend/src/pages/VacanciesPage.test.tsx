@@ -36,6 +36,9 @@ function row(id: number, name: string): VacancyRow {
   return {
     id,
     hh_id: String(1000 + id),
+    source: 'hh',
+    source_id: null,
+    source_label: 'hh.ru',
     name,
     employer: { id: '1', name: 'Компания', accredited_it: false, trusted: null },
     area_name: 'Москва',
@@ -72,6 +75,11 @@ function row(id: number, name: string): VacancyRow {
     has_full: true,
   }
 }
+
+// a vacancy of HireHi: no number of hh.ru, its own id and page
+const HIREHI_PAGE = 'https://hirehi.ru/vacancy/backend-engineer-7f3e2a'
+const HIREHI_ROW: VacancyRow = { ...row(6, 'Backend-инженер'), hh_id: null, source: 'hirehi', source_id: '7f3e2a', source_label: 'HireHi', alternate_url: HIREHI_PAGE, apply_alternate_url: HIREHI_PAGE }
+const HIREHI_TITLE = 'Вакансия с HireHi: отклик — на её странице на HireHi'
 
 function listRequests(calls: string[]): URLSearchParams[] {
   return calls.filter((c) => c.startsWith('/api/vacancies?')).map((c) => new URLSearchParams(c.split('?')[1]))
@@ -276,6 +284,16 @@ describe('VacanciesPage', () => {
     fireEvent.keyDown(document.activeElement ?? document.body, { key: 'л', code: 'KeyK' })
     expect(await screen.findByRole('heading', { name: 'Первая вакансия' })).toBeInTheDocument()
   })
+
+  it('marks a vacancy of HireHi in the list', async () => {
+    stubApi({
+      '/api/vacancies/hidden-employers': [],
+      '/api/vacancies': { ...EMPTY_LIST, items: [row(5, 'Первая вакансия'), HIREHI_ROW], total: 2, counts: counts({ candidates: 2, total: 2 }) },
+    })
+    renderAt('/vacancies', '/vacancies', <VacanciesPage />)
+    await screen.findByRole('button', { name: 'Backend-инженер' })
+    expect(screen.getAllByTitle(HIREHI_TITLE)).toHaveLength(1)
+  })
 })
 
 describe('VacanciesPage, classic view', () => {
@@ -408,6 +426,17 @@ describe('VacanciesPage, classic view', () => {
     expect(screen.getByRole('button', { name: 'Открыть по очереди на hh.ru (2)' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Снять выбор' }))
     expect(screen.queryByText('Выбрано 2')).toBeNull()
+  })
+
+  it('marks a vacancy of HireHi and names no site in the response of a selection with one', async () => {
+    localStorage.setItem(LAYOUT_KEY, 'classic')
+    stubApi({ '/api/vacancies/hidden-employers': [], '/api/vacancies': list([row(5, 'Первая вакансия'), HIREHI_ROW]) })
+    renderAt('/vacancies', '/vacancies', <VacanciesPage />)
+    const table = await screen.findByRole('table', { name: 'Вакансии' })
+    await within(table).findByRole('button', { name: 'Backend-инженер' })
+    expect(within(table).getAllByTitle(HIREHI_TITLE)).toHaveLength(1)
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Выбрать все на странице' }))
+    expect(screen.getByRole('button', { name: 'Открыть по очереди (2)' })).toBeInTheDocument()
   })
 
   it('lists the hidden employers under the table and shows one again', async () => {
@@ -548,6 +577,71 @@ describe('VacancyDrawer actions', () => {
     expect(screen.getByRole('button', { name: /Вопросы работодателя при отклике/ })).toHaveAttribute('aria-expanded', 'true')
     expect(screen.queryByRole('button', { name: 'Запросить ответы' })).toBeNull()
     expect(screen.queryByRole('textbox', { name: 'Вопросы работодателя' })).toBeNull()
+  })
+
+  // the API mode with the consent given: a vacancy of hh.ru would go to the queue
+  const API_MODE = {
+    apply_mode: 'api',
+    consent_accepted_at: '2026-10-01T10:00:00Z',
+    resume_id: '1',
+    dry_run: false,
+    autopilot: false,
+    autopilot_min_score: 70,
+    limits: { today_sent: 0, max_per_day: 30, remaining_day: 30, hour_sent: 0, max_per_hour: 8, remaining_hour: 8, window: '09:00-21:00', in_window: true, paused_until: null, paused_reason: null, hh_cap: 200, can_send: true, blocked_reasons: [] },
+    job_running: false,
+  }
+  const hirehiDetail = (status: string) => ({
+    ...detail(status),
+    hh_id: null,
+    source: 'hirehi',
+    source_id: '7f3e2a',
+    source_label: 'HireHi',
+    source_apply_label: 'Отклик',
+    alternate_url: HIREHI_PAGE,
+    apply_alternate_url: HIREHI_PAGE,
+    letter: LETTER,
+  })
+
+  it('opens the response to a HireHi vacancy by hand on its page, also in the API mode', async () => {
+    vi.stubGlobal('open', vi.fn())
+    const d = hirehiDetail('suitable')
+    const opened = {
+      id: 31,
+      vacancy_id: 5,
+      vacancy: { id: 5, hh_id: null, source: 'hirehi', name: d.name, employer_name: 'Рога и копыта', alternate_url: HIREHI_PAGE, apply_alternate_url: HIREHI_PAGE, pipeline_status: 'suitable', score: 80 },
+      mode: 'assist',
+      status: 'needs_manual',
+      letter_text: LETTER.text,
+      apply_url: HIREHI_PAGE,
+      source: 'hirehi',
+    }
+    const api = stubApi({ ...routes('suitable'), '/api/vacancies/5': d, '/api/applications/status': API_MODE, '/api/applications/assist/open': opened })
+    renderAt('/vacancies?open=5', '/vacancies', <VacanciesPage />)
+    expect(await screen.findByText('Отклик — на странице HireHi: кнопка «Отклик» откроет сайт работодателя, Telegram или почту. Нужен вход на HireHi.')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'HireHi' })).toHaveAttribute('href', HIREHI_PAGE)
+    expect(screen.getByTitle('Вакансия с HireHi')).toBeInTheDocument()
+    const apply = await screen.findByRole('button', { name: 'Открыть отклик на HireHi' })
+    expect(screen.queryByRole('button', { name: 'Откликнуться через API' })).toBeNull()
+    // no separate response page on HireHi: the menu offers the vacancy page alone
+    fireEvent.click(screen.getByRole('button', { name: 'Ещё действия' }))
+    expect(await screen.findByRole('menuitem', { name: /^Открыть вакансию на HireHi/ })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: /Страница отклика/ })).toBeNull()
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' })
+
+    fireEvent.click(apply)
+    const panel = await screen.findByRole('region', { name: 'Отклик на HireHi' })
+    expect(within(panel).getByText(/^На HireHi нажмите «Отклик» \(нужен вход\)/)).toBeInTheDocument()
+    expect(window.open).toHaveBeenCalledWith(HIREHI_PAGE, '_blank', 'noopener')
+    expect(api.requests.find((r) => r.method === 'POST' && r.path === '/api/applications/assist/open')?.body).toEqual({ vacancy_id: 5 })
+    expect(api.requests.some((r) => r.path === '/api/applications/queue')).toBe(false)
+  })
+
+  it('tells how a closed HireHi vacancy comes back', async () => {
+    stubApi({ ...routes('filtered_out'), '/api/vacancies/5': { ...hirehiDetail('filtered_out'), archived: true, pipeline_reason: 'закрыта на HireHi' } })
+    renderAt('/vacancies?open=5', '/vacancies', <VacanciesPage />)
+    expect(await screen.findByText('Закрыта на HireHi: откликнуться на неё нельзя. Если она снова появится на HireHi, нажмите «Переоценить».')).toBeInTheDocument()
+    expect(screen.queryByText(/^Отклик — на странице HireHi/)).toBeNull()
+    expect(screen.queryByRole('button', { name: /Открыть отклик на HireHi/ })).toBeNull()
   })
 
   it('shows the marks that change how to apply', async () => {

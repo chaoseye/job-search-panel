@@ -104,6 +104,8 @@ async def _refresh_search(
                 )
             )
             for vacancy_id, hh_id, current, raw in rows.all():
+                if hh_id is None:  # never: the rows were selected by their hh.ru number
+                    continue
                 done.add(hh_id)
                 item = given[hh_id]
                 responses = responses_of(item)
@@ -132,7 +134,14 @@ async def refresh_responses(runtime: Runtime, *, days: int | None = None) -> dic
             summary["skipped"] = f"paused: {state.paused_reason}"
             return summary
         searches = (
-            (await session.execute(select(SavedSearch).where(SavedSearch.enabled.is_(True)).order_by(SavedSearch.id)))
+            (
+                await session.execute(
+                    # the searches of HireHi have no responses counter (and are not hh.ru's to re-read)
+                    select(SavedSearch)
+                    .where(SavedSearch.enabled.is_(True), SavedSearch.source != "hirehi")
+                    .order_by(SavedSearch.id)
+                )
+            )
             .scalars()
             .all()
         )

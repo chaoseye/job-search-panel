@@ -121,7 +121,7 @@ def _quartiles(values: list[int]) -> tuple[int | None, int | None, int | None]:
 @dataclass
 class V:
     id: int
-    hh_id: str
+    hh_id: str | None  # None for a HireHi vacancy
     name: str
     url: str | None
     employer_id: str | None
