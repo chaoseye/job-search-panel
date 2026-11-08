@@ -287,7 +287,7 @@ export default function VacanciesPage() {
   const meta: ReactNode[] = []
   if (counts) {
     meta.push(countOf(counts.candidates, ['кандидат', 'кандидата', 'кандидатов']))
-    if (counts.unseen_candidates > 0) meta.push(`${counts.unseen_candidates} ${counts.unseen_candidates === 1 ? 'новый' : 'новых'}`)
+    if (counts.unseen_candidates > 0) meta.push(countOf(counts.unseen_candidates, ['новый', 'новых', 'новых']))
     if (counts.new > 0) meta.push(`${counts.new} ${plural(counts.new, ['ждёт', 'ждут', 'ждут'])} обработки`)
   }
   if (jobs.data?.last_scan_at) meta.push(`поиски проверены ${relativeTime(jobs.data.last_scan_at)}`)

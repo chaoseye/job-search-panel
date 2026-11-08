@@ -1,7 +1,9 @@
 """What the user decided stays decided: a Claude result imported later does not resurrect a vacancy
 the user hid, skipped or applied to; «Вернуть» keeps the Claude verdict; un-hiding an employer brings its vacancies
-back; «В пакет» is refused once an application exists; skipping/hiding withdraws an application the API queue has not
-sent; a vacancy Claude keeps failing on is parked after MAX_CLAUDE_ATTEMPTS; a result carrying secrets is rejected."""
+back; «В пакет» is refused once an application exists; a vacancy closed on hh.ru never goes back to Claude (no
+evaluation, no new letter, no answers);
+skipping/hiding withdraws an application the API queue has not sent; a vacancy Claude keeps failing on is parked after
+MAX_CLAUDE_ATTEMPTS; a result carrying secrets is rejected."""
 
 from __future__ import annotations
 
@@ -12,9 +14,12 @@ import httpx
 import respx
 from sqlalchemy import select
 
-from app.db.models import Application, Notification, Vacancy
+from app.db.models import Application, Notification, QuestionAnswers, Vacancy
 from app.exchange.importer import MAX_CLAUDE_ATTEMPTS
-from tests.integration.test_api_m3 import _good_letter, _login, _result, _seed, api  # noqa: F401
+from app.services.freshness import CLOSED_REASON, _close
+from app.services.scanner import reprocess_all
+from tests.integration.test_api_m2 import _full
+from tests.integration.test_api_m3 import BASE, _good_letter, _login, _result, _seed, api  # noqa: F401
 from tests.integration.test_api_m4 import _consent
 from tests.integration.test_api_m4 import _seed as _seed_api_mode
 from tests.integration.test_api_m4 import api as api_mode  # noqa: F401
@@ -157,6 +162,80 @@ async def test_to_batch_is_refused_once_applied(api, respx_mock: respx.MockRoute
     assert r.status_code == 409 and "отклик" in r.json()["detail"]
     await client.post(f"/api/vacancies/{vid}/skip", json={})
     assert (await client.post(f"/api/vacancies/{vid}/restore")).json()["pipeline_status"] == "sent"
+
+
+@respx.mock(assert_all_called=False)
+async def test_a_vacancy_closed_on_hh_never_goes_back_to_claude(api, respx_mock: respx.MockRouter) -> None:
+    """The nightly check closed a candidate; its stored cards still read «open» (they were fetched before). Nobody can
+    respond to it, so a letter would be wasted: «Вернуть» and «В пакет» are refused with the way back (a link), a
+    re-evaluation on the stored card keeps it closed, a packet never takes it, and a fresh card that shows it closed
+    wins over the user's «оставить»."""
+    client, runtime = api
+    await _login(client, respx_mock)
+    ids = await _seed(client, runtime, respx_mock, ["83", "84"])
+    vid = ids["83"]
+    async with runtime.session_factory() as session:
+        row = await session.get(Vacancy, vid)
+        assert row is not None
+        _close(row, CLOSED_REASON)
+        await session.commit()
+
+    for action in ("restore", "to-batch"):
+        r = await client.post(f"/api/vacancies/{vid}/{action}")
+        assert r.status_code == 409, (action, r.text)
+        assert "закрыта на hh.ru" in r.json()["detail"] and "по ссылке на hh.ru" in r.json()["detail"], action
+    # a re-evaluation on the stored card: the background one after a change of the questionnaire, and a single one
+    await reprocess_all(runtime)
+    r = await client.post(f"/api/vacancies/{vid}/reprocess", params={"refetch": "false"})
+    assert (r.json()["pipeline_status"], r.json()["archived"]) == ("filtered_out", True)
+
+    # a status the user kept before it closed (the scanner leaves those alone): the packet still does not take it
+    async with runtime.session_factory() as session:
+        row = await session.get(Vacancy, vid)
+        assert row is not None
+        row.pipeline_status, row.user_override = "prescored", True
+        await session.commit()
+    _, packet = await _packet(client)
+    assert [t["vacancy"]["id"] for t in packet["tasks"]] == ["84"]
+    assert (await _vacancy(client, vid))["pipeline_status"] == "prescored"
+
+    # «Переоценить» loads a fresh card: closed there, it leaves the candidates whatever the user kept
+    respx_mock.get(f"{BASE}/vacancies/83").mock(return_value=httpx.Response(200, json=_full("83", archived=True)))
+    r = await client.post(f"/api/vacancies/{vid}/reprocess")
+    assert (r.json()["pipeline_status"], r.json()["pipeline_reason"]) == ("filtered_out", "вакансия в архиве")
+
+
+@respx.mock(assert_all_called=False)
+async def test_a_closed_vacancy_gets_no_new_letter_and_no_answers(api, respx_mock: respx.MockRouter) -> None:
+    """The card of a vacancy closed on hh.ru asks Claude for nothing more: a new version of the letter and the answers
+    to the employer's questions are refused, and the requests made before the closing are cancelled, not packed."""
+    client, runtime = api
+    await _login(client, respx_mock)
+    ids = await _seed(client, runtime, respx_mock, ["85"])
+    vid = ids["85"]
+    path, packet = await _packet(client)
+    await _import(client, runtime, path, packet, [_evaluated("85")])  # evaluated, with Claude's letter
+    r = await client.post(f"/api/vacancies/{vid}/letter/revision", json={"comment": "короче"})
+    assert r.status_code == 200 and r.json()["revision_request"]["status"] == "queued", r.text
+    async with runtime.session_factory() as session:
+        # answers asked while no packet could be built wait in the queue
+        session.add(
+            QuestionAnswers(vacancy_id=vid, questions_text="Опыт с FastAPI?", questions_json='["Опыт с FastAPI?"]')
+        )
+        row = await session.get(Vacancy, vid)
+        assert row is not None
+        _close(row, CLOSED_REASON)
+        await session.commit()
+
+    r = await client.post(f"/api/vacancies/{vid}/letter/revision", json={"comment": "ещё короче"})
+    assert r.status_code == 409 and "закрыта на hh.ru" in r.json()["detail"], r.text
+    r = await client.post(f"/api/vacancies/{vid}/questions", json={"text": "Какой у вас опыт с FastAPI?"})
+    assert r.status_code == 409 and "закрыта на hh.ru" in r.json()["detail"], r.text
+    # what was asked before the closing does not reach Claude either: no packet, both requests cancelled
+    assert (await client.post("/api/batches/create", json={})).json()["created"] == []
+    assert (await _vacancy(client, vid))["revision_request"] is None
+    answers = (await client.get(f"/api/vacancies/{vid}/questions")).json()
+    assert [(a["status"], a["error"]) for a in answers] == [("cancelled", "вакансия закрыта на hh.ru")]
 
 
 @respx.mock(assert_all_called=False)

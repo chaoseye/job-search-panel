@@ -73,7 +73,7 @@ export default function SitesPage() {
   const meta: string[] = []
   if (sites.data) {
     meta.push(countOf(items.length, ['сайт', 'сайта', 'сайтов']))
-    if (newTotal > 0) meta.push(`${newTotal} ${newTotal === 1 ? 'новая вакансия' : 'новых вакансий'}`)
+    if (newTotal > 0) meta.push(countOf(newTotal, ['новая вакансия', 'новые вакансии', 'новых вакансий']))
     meta.push(sites.data.interval_min > 0 ? `проверка каждые ${sites.data.interval_min} мин` : 'автоматическая проверка выключена (SITES_SYNC_MIN=0)')
   }
 

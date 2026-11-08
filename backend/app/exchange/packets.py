@@ -162,7 +162,9 @@ async def _assign_profile_files(
 
 
 async def _candidates(session: AsyncSession, vacancy_ids: list[int] | None) -> list[Vacancy]:
-    stmt = select(Vacancy).where(Vacancy.hidden.is_(False))
+    # a vacancy closed on hh.ru never goes to Claude, whatever its status says: nobody can respond to it, and a status
+    # kept by the user (`user_override` — the scanner leaves those alone) may still read `prescored`
+    stmt = select(Vacancy).where(Vacancy.hidden.is_(False), Vacancy.archived.is_(False))
     if vacancy_ids:
         stmt = stmt.where(Vacancy.id.in_(vacancy_ids))
     else:
@@ -191,6 +193,15 @@ async def _revision_tasks(session: AsyncSession, max_chars: int) -> list[tuple[P
         vacancy = await session.get(Vacancy, req.vacancy_id)
         if vacancy is None:
             req.status = "cancelled"
+            continue
+        if vacancy.archived:  # asked before the vacancy closed on hh.ru: nobody can send the new version now
+            req.status = "cancelled"
+            await audit(
+                session,
+                "letters",
+                f"Переработка письма отменена: вакансия закрыта на hh.ru «{vacancy.name}»",
+                vacancy_id=vacancy.id,
+            )
             continue
         letter = await session.get(CoverLetter, req.previous_letter_id) if req.previous_letter_id else None
         if letter is None:
@@ -415,6 +426,16 @@ async def _question_tasks(session: AsyncSession, max_chars: int) -> list[tuple[P
         if vacancy is None:
             req.status = "cancelled"
             req.error = "вакансия удалена"
+            continue
+        if vacancy.archived:  # asked before the vacancy closed on hh.ru: its form takes no response now
+            req.status = "cancelled"
+            req.error = "вакансия закрыта на hh.ru"
+            await audit(
+                session,
+                "batches",
+                f"Ответы на вопросы работодателя отменены: вакансия закрыта на hh.ru «{vacancy.name}»",
+                vacancy_id=vacancy.id,
+            )
             continue
         letter = await current_letter(session, vacancy.id)
         evaluation = (

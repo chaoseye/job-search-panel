@@ -1,6 +1,7 @@
 """The user's actions on a vacancy from every pipeline status: the table below is the rule book of «Пропустить»,
 «Скрыть», «Вернуть в кандидаты», «В пакет для Claude», «Переоценить» and «Вакансия недоступна». hh.ru answers 503
-to everything: no action may need it (reprocess works on the stored card)."""
+to everything: no action may need it (reprocess works on the stored card). The `closed*` cases are closed on hh.ru
+(`archived`, the nightly check): their stored cards were fetched before the closing and still read «open»."""
 
 from __future__ import annotations
 
@@ -41,8 +42,16 @@ CASES: dict[str, tuple[str, int | None, int | None, tuple[str, str] | None]] = {
     "queued": ("queued", 60, 85, ("api", "queued")),
     "sent": ("sent", 60, 85, ("assist", "sent")),
     "assist_open": ("needs_manual", 60, 85, ("assist", "needs_manual")),
+    "closed": ("filtered_out", 60, None, None),
+    "closed_evaluated": ("filtered_out", 60, 85, None),
+    "closed_assist_open": ("filtered_out", 60, 85, ("assist", "needs_manual")),
 }
-WITH_RESPONSE = {"queued", "sent", "assist_open"}
+CLOSED = {"closed", "closed_evaluated", "closed_assist_open"}
+# closed on hh.ru without a response: no return to candidates, no packet (nobody can respond to them)
+CLOSED_NO_RESPONSE = {"closed", "closed_evaluated"}
+# the assistant page is open (its response may be on hh.ru already, waiting for «Да, отправлено»)
+OPEN_PAGE = {"assist_open", "closed_assist_open"}
+WITH_RESPONSE = {"queued", "sent", "assist_open", "closed_assist_open"}
 # where «Вернуть в кандидаты» leads (revived_status: the application's stage, the pending packet, the Claude verdict,
 # else prescored with a prescore / new without one)
 RESTORED = {
@@ -61,9 +70,19 @@ RESTORED = {
     "queued": "queued",
     "sent": "sent",
     "assist_open": "needs_manual",
+    "closed_assist_open": "needs_manual",  # back to its response's stage: «Да, отправлено» still works on it
 }
-# «Переоценить» leaves these as they are: a response, a packet, a Claude verdict (scanner.reprocess_keeps_status)
-KEPT_ON_REPROCESS = {"already_applied", "awaiting_claude", "suitable", "maybe", "rejected_by_claude", *WITH_RESPONSE}
+# «Переоценить» leaves these as they are: a response, a packet, a Claude verdict (scanner.reprocess_keeps_status), a
+# vacancy closed on hh.ru (its stored card predates the closing; only a fresh one may bring it back)
+KEPT_ON_REPROCESS = {
+    "already_applied",
+    "awaiting_claude",
+    "suitable",
+    "maybe",
+    "rejected_by_claude",
+    *WITH_RESPONSE,
+    *CLOSED,
+}
 
 
 @pytest.fixture
@@ -93,6 +112,8 @@ async def _seed(runtime: Runtime) -> dict[str, int]:
                 prescore=prescore,
                 score=claude,
                 hidden=status == "hidden",
+                archived=key in CLOSED,
+                pipeline_reason="закрыта на hh.ru (архив)" if key in CLOSED else None,
                 batch_id=PENDING_BATCH if status == "awaiting_claude" else None,
                 raw_short_json=json.dumps(short_item(id=hh_id, name=name), ensure_ascii=False),
                 raw_full_json=json.dumps({**full, "id": hh_id, "name": name}, ensure_ascii=False),
@@ -149,9 +170,9 @@ async def test_actions_from_every_status(api, respx_mock: respx.MockRouter, acti
         after, hidden = await _status(runtime, vid)
         apps = await _apps(runtime, vid)
         expected_code = 200
-        if action == "restore" and key == "already_applied":
+        if action == "restore" and (key == "already_applied" or key in CLOSED_NO_RESPONSE):
             expected_code = 409
-        if action == "to-batch" and (key in WITH_RESPONSE or key == "already_applied"):
+        if action == "to-batch" and (key in WITH_RESPONSE or key == "already_applied" or key in CLOSED_NO_RESPONSE):
             expected_code = 409
         if action == "unavailable" and key in ("sent", "already_applied"):  # the response is out: nothing to hide
             expected_code = 409
@@ -176,8 +197,8 @@ async def test_actions_from_every_status(api, respx_mock: respx.MockRouter, acti
             problems.append(f"{action} {key}: {before} → {after} (hidden={hidden}, отклики {apps})")
         # a response that was sent or is waiting for the user is never cancelled by a vacancy action — except
         # «Вакансия недоступна» for the open page of the assistant: hh.ru would not take the response
-        unavailable_page = action == "unavailable" and key == "assist_open"
-        if key in ("sent", "assist_open") and not unavailable_page and apps != [CASES[key][3][1]]:  # type: ignore[index]
+        unavailable_page = action == "unavailable" and key in OPEN_PAGE
+        if key in ("sent", *OPEN_PAGE) and not unavailable_page and apps != [CASES[key][3][1]]:  # type: ignore[index]
             problems.append(f"{action} {key}: отклик изменился: {apps}")
         if key == "queued" and action in ("skip", "hide", "unavailable") and apps != ["cancelled"]:
             problems.append(f"{action} {key}: отклик в очереди не отменён: {apps}")

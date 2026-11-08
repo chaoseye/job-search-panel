@@ -334,6 +334,8 @@ async def request_revision(
     row = await _get(session, vacancy_id)
     try:
         await letters_svc.request_revision(session, row, body.comment)
+    except letters_svc.RevisionRefused as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     await session.commit()

@@ -468,7 +468,9 @@ async def process_vacancy(session: AsyncSession, client: HHClient, row: Vacancy,
         v = fetched
         apply_data_to_row(row, v, ctx.rules.currency_rates)
 
-    result = apply_rules(v, ctx.rules) if not row.user_override else RuleResult(status=None)
+    # the user's «оставить» spares a vacancy the rules, not the archive of hh.ru (the first rule): a kept vacancy that
+    # a fresh card shows closed must not become `prescored` again
+    result = apply_rules(v, ctx.rules) if not row.user_override or v.archived else RuleResult(status=None)
     if not result.passed:
         _set_result(row, result)
         return row.pipeline_status
@@ -681,6 +683,10 @@ async def reprocess_keeps_status(session: AsyncSession, row: Vacancy) -> bool:
 async def reprocess_vacancy(
     session: AsyncSession, client: HHClient, settings: Any, row: Vacancy, *, refetch: bool
 ) -> str:
+    if row.archived and not refetch:
+        # closed on hh.ru: the stored card predates the closing (it still reads «open»), the rules would pass on it and
+        # the prescore would send the vacancy to Claude; only a fresh card (refetch) may bring it back
+        return row.pipeline_status
     keep = await reprocess_keeps_status(session, row)
     if keep and not refetch:
         return row.pipeline_status
@@ -744,7 +750,8 @@ async def reprocess_all(
     Two kinds of vacancies keep their status whatever the filter: those with a current Claude verdict (their
     «ниже порога» came from the evaluation, not from the rules — a prescore must not overwrite it and re-pack
     them) and those with an assist application waiting for the user's confirmation (`needs_manual` of the
-    apply flow, not of the rules)."""
+    apply flow, not of the rules). Without refetch the vacancies closed on hh.ru are left out: their stored card
+    predates the closing, and on it a closed vacancy would pass the rules and go to Claude."""
     from app.db.models import Application, VacancyEvaluation
 
     settings = runtime.settings
@@ -762,6 +769,8 @@ async def reprocess_all(
             await session.commit()
         ctx = await build_context(session, client, settings)
         stmt = select(Vacancy.id).where(Vacancy.pipeline_status.in_(statuses), Vacancy.hidden.is_(False))
+        if not refetch:
+            stmt = stmt.where(Vacancy.archived.is_(False))
         if scoped and profile_id is None:
             stmt = stmt.where(Vacancy.selection_profile_id.is_(None))
         elif scoped:

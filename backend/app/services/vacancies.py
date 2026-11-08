@@ -695,6 +695,12 @@ async def hide(session: AsyncSession, row: Vacancy) -> None:
 
 ALREADY_ON_HH = "already_applied"
 UNAVAILABLE_REASON = "недоступна на hh.ru (отметил пользователь)"
+# a vacancy closed on hh.ru (`archived`: the nightly check of closed vacancies, a search or a fresh card said so) takes
+# no response, so nothing of it goes to Claude: «Вернуть», «В пакет для Claude», «Переделать в Claude» and the
+# employer's questions refuse it; one the employer re-opens comes back by a link (the card is fetched again: «По
+# ссылке» of the compact view, «Добавить вакансии по ссылкам» of the classic one), a repost is a new vacancy anyway
+CLOSED_ON_HH = "Вакансия закрыта на hh.ru: откликнуться на неё нельзя"
+BACK_BY_LINK = "Если работодатель откроет её снова, добавьте её по ссылке на hh.ru: панель заново загрузит карточку"
 # responses that have not gone yet: the open page of the assistant (or a manual step hh asked for) and the API queue
 OPEN_RESPONSE_STATUSES = ("needs_manual", "queued")
 
@@ -763,9 +769,13 @@ async def restore(session: AsyncSession, row: Vacancy, settings: Settings | None
     """Brings a filtered/skipped/hidden vacancy back and protects it from the rules. A vacancy Claude has already
     evaluated returns to its verdict (not to `prescored`, which would re-pack it for Claude and write a second
     letter), one with an application — to the application's stage. One hh.ru already has a response to (the
-    relation, the negotiations sync) stays: a candidate there would only get a letter nobody can send."""
+    relation, the negotiations sync) stays: a candidate there would only get a letter nobody can send. One closed on
+    hh.ru comes back only to the stage of its response (the open page of the assistant still takes «Да, отправлено»):
+    without one it would land in `prescored` and go to Claude for a letter nobody can send either."""
     if row.pipeline_status == ALREADY_ON_HH:
         raise VacancyActionError("На hh.ru по вакансии уже есть отклик — вернуть её в кандидаты нельзя")
+    if row.archived and await open_application(session, row.id) is None:
+        raise VacancyActionError(f"{CLOSED_ON_HH}, поэтому в кандидаты она не вернётся. {BACK_BY_LINK}")
     fallback = "prescored" if row.prescore is not None else "new"
     row.hidden = False
     row.snoozed_until = None
@@ -867,6 +877,8 @@ async def to_batch(session: AsyncSession, row: Vacancy) -> None:
         raise VacancyActionError(f"По вакансии уже есть отклик ({stage}) — новый разбор и письмо не нужны")
     if row.pipeline_status == ALREADY_ON_HH:
         raise VacancyActionError("На hh.ru по вакансии уже есть отклик — новый разбор и письмо не нужны")
+    if row.archived:
+        raise VacancyActionError(f"{CLOSED_ON_HH}, разбор и письмо не нужны. {BACK_BY_LINK}")
     if row.pipeline_status in ("filtered_out", "not_suitable", "skipped", "hidden", "needs_manual"):
         row.user_override = True
     row.hidden = False
