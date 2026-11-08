@@ -207,7 +207,15 @@ async def save_edit(session: AsyncSession, vacancy: Vacancy, text: str, *, check
     return row
 
 
+class RevisionRefused(ValueError):
+    """A new version of the letter Claude must not write: the API answers 409, not the 400 of a bad request."""
+
+
 async def request_revision(session: AsyncSession, vacancy: Vacancy, comment: str) -> LetterRevisionRequest:
+    if vacancy.archived:
+        from app.services.vacancies import BACK_BY_LINK, CLOSED_ON_HH  # services.vacancies imports this module
+
+        raise RevisionRefused(f"{CLOSED_ON_HH}, новое письмо не нужно. {BACK_BY_LINK}")
     comment = comment.strip()
     if not comment:
         raise ValueError("укажите, что изменить в письме")

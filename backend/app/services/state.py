@@ -9,6 +9,7 @@ from typing import Any
 
 import httpx
 import structlog
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import Settings
@@ -58,9 +59,13 @@ async def delete_setting(session: AsyncSession, key: str) -> None:
 async def get_system_state(session: AsyncSession) -> SystemState:
     row = await session.get(SystemState, 1)
     if row is None:
-        row = SystemState(id=1)
-        session.add(row)
-        await session.flush()
+        # on a new base the first page asks several endpoints at once, and each finds no row: a plain insert of the
+        # one that waited for the write lock failed on the key (UNIQUE constraint → HTTP 500). The insert gives way
+        # instead, and the row of the winner is read.
+        await session.execute(sqlite_insert(SystemState).values(id=1).on_conflict_do_nothing(index_elements=["id"]))
+        row = await session.get(SystemState, 1)
+        if row is None:  # pragma: no cover - the insert above or the winner's has just made it
+            raise RuntimeError("system_state: строка состояния не создалась")
     return row
 
 

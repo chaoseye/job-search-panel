@@ -173,9 +173,11 @@ function CardHeader({ d, act, applyMode, onApply }: { d: VacancyDetail; act: Act
   const active = !['skipped', 'hidden', 'already_applied'].includes(status)
   // a response exists (sent, on its way, already on hh.ru): the server refuses a new packet and a return to candidates
   const responded = ['sent', 'queued', 'already_applied'].includes(status)
-  const canApply = !['sent', 'queued', 'already_applied', 'hidden', 'skipped'].includes(status)
+  // closed on hh.ru: no response is possible, so the server refuses a response, a return to candidates and a packet
+  const closed = d.archived
+  const canApply = !closed && !['sent', 'queued', 'already_applied', 'hidden', 'skipped'].includes(status)
   const blockReason = d.letter?.send_problems.join('; ') || (d.response_letter_required && !d.letter ? 'работодатель требует сопроводительное письмо, а его ещё нет' : '')
-  const canBatch = status !== 'awaiting_claude' && !responded
+  const canBatch = status !== 'awaiting_claude' && !responded && !closed
   const net = salaryNet(d.salary)
   const published = salaryPublished(d.salary)
   const flags = rowFlags(d.flags)
@@ -300,12 +302,12 @@ function CardHeader({ d, act, applyMode, onApply }: { d: VacancyDetail; act: Act
         )}
         {active && <SkipButton act={act} />}
         {active && <SnoozeMenu d={d} act={act} />}
-        {!active && status !== 'already_applied' && (
+        {!active && status !== 'already_applied' && !closed && (
           <Button variant="primary" onClick={() => act.mutate({ action: 'restore' })} disabled={act.isPending}>
             Вернуть в кандидаты
           </Button>
         )}
-        {(status === 'filtered_out' || status === 'not_suitable') && (
+        {(status === 'filtered_out' || status === 'not_suitable') && !closed && (
           <Button onClick={() => act.mutate({ action: 'restore' })} disabled={act.isPending} title="Правила к ней больше не применяются">
             Оставить как кандидата
           </Button>
@@ -342,6 +344,7 @@ function StatusLine({ d, blockReason }: { d: VacancyDetail; blockReason: string 
   if (s === 'awaiting_claude') lines.push(`В пакете ${d.batch_id ?? ''}: Claude разберёт его при следующем запуске /hh-batch.`)
   if (d.snoozed_until) lines.push(`Отложена до ${formatDateTime(d.snoozed_until)}.`)
   if (d.pipeline_reason) lines.push(`Причина: ${d.pipeline_reason}.`)
+  if (d.archived) lines.push('Закрыта на hh.ru: откликнуться на неё нельзя. Если её откроют снова, добавьте её по ссылке на hh.ru.')
   if (d.user_override) lines.push('Оставлена вручную: правила отбора к ней не применяются.')
   if (d.selection_profile_name) lines.push(`Критерии отбора: ${d.selection_profile_name}.`)
   if (blockReason) lines.push(`Отклик пока нельзя открыть: ${blockReason}.`)
@@ -478,7 +481,10 @@ function LetterTab({ d, act, onChanged }: { d: VacancyDetail; act: Act; onChange
             )}
           </>
         ) : (
-          <span className="text-caption text-ink-2">Письма ещё нет: Claude напишет его при разборе. Можно написать самому или взять шаблон.</span>
+          <span className="text-caption text-ink-2">
+            {/* a closed vacancy goes to Claude no more: no letter will come from a packet */}
+            {d.archived ? 'Письма нет: вакансия закрыта на hh.ru.' : 'Письма ещё нет: Claude напишет его при разборе. Можно написать самому или взять шаблон.'}
+          </span>
         )}
         {d.revision_request && (
           <Badge tone="info">
@@ -539,7 +545,7 @@ function LetterTab({ d, act, onChanged }: { d: VacancyDetail; act: Act; onChange
         <Button variant="ghost" disabled={act.isPending} onClick={() => act.mutate({ action: 'letter/template' })}>
           Шаблон
         </Button>
-        {letter && (
+        {letter && !d.archived && (
           <Popover
             label="Попросить Claude переделать письмо"
             className="w-96"
@@ -580,7 +586,8 @@ function LetterTab({ d, act, onChanged }: { d: VacancyDetail; act: Act; onChange
       </div>
       {save.error && <ErrorNotice error={save.error} title="Письмо не сохранено" />}
 
-      <QuestionsBlock d={d} />
+      {/* closed on hh.ru: the form takes no response, so no new answers; the ones already written stay readable */}
+      {!(d.archived && d.question_answers.length === 0) && <QuestionsBlock d={d} />}
     </div>
   )
 }
@@ -621,22 +628,26 @@ function QuestionsBlock({ d }: { d: VacancyDetail }) {
       </button>
       {open && (
         <div className="mt-3 space-y-3">
-          <p className="text-caption text-ink-2">
-            Если форма отклика на hh.ru задаёт вопросы, вставьте их сюда как есть: по вопросу на абзац, варианты ответа списком. Claude ответит по фактам
-            профиля с учётом письма; где фактов нет, поставит «уточнить».
-          </p>
-          <Textarea aria-label="Вопросы работодателя" value={text} onChange={(e) => setText(e.target.value)} placeholder={'Есть ли у вас опыт…?\n\nКакие технологии использовали?\n* Docker\n* Kafka'} />
-          <div className="flex flex-wrap items-center gap-2">
-            <Button disabled={ask.isPending || text.trim().length < 5} onClick={() => ask.mutate()}>
-              Запросить ответы
-            </Button>
-            {ask.data && (
-              <span className="text-caption text-good">
-                {ask.data.batch_id ? `Задача в пакете ${ask.data.batch_id} — запустите /hh-batch.` : 'Задача в очереди: попадёт в следующий пакет.'}
-              </span>
-            )}
-          </div>
-          {ask.error && <ErrorNotice error={ask.error} title="Вопросы не отправлены" />}
+          {!d.archived && (
+            <>
+              <p className="text-caption text-ink-2">
+                Если форма отклика на hh.ru задаёт вопросы, вставьте их сюда как есть: по вопросу на абзац, варианты ответа списком. Claude ответит по
+                фактам профиля с учётом письма; где фактов нет, поставит «уточнить».
+              </p>
+              <Textarea aria-label="Вопросы работодателя" value={text} onChange={(e) => setText(e.target.value)} placeholder={'Есть ли у вас опыт…?\n\nКакие технологии использовали?\n* Docker\n* Kafka'} />
+              <div className="flex flex-wrap items-center gap-2">
+                <Button disabled={ask.isPending || text.trim().length < 5} onClick={() => ask.mutate()}>
+                  Запросить ответы
+                </Button>
+                {ask.data && (
+                  <span className="text-caption text-good">
+                    {ask.data.batch_id ? `Задача в пакете ${ask.data.batch_id} — запустите /hh-batch.` : 'Задача в очереди: попадёт в следующий пакет.'}
+                  </span>
+                )}
+              </div>
+              {ask.error && <ErrorNotice error={ask.error} title="Вопросы не отправлены" />}
+            </>
+          )}
           {d.question_answers.map((qa) => (
             <div key={qa.id} className="rounded-lg border border-line p-3">
               <div className="mb-2 flex flex-wrap items-center gap-2 text-caption text-ink-3">

@@ -76,7 +76,7 @@ export default function ChannelsPage() {
   const meta: string[] = []
   if (channels.data) {
     meta.push(countOf(items.length, ['канал', 'канала', 'каналов']))
-    if (newTotal > 0) meta.push(`${newTotal} ${newTotal === 1 ? 'новый пост' : 'новых постов'}`)
+    if (newTotal > 0) meta.push(countOf(newTotal, ['новый пост', 'новых поста', 'новых постов']))
     meta.push(channels.data.interval_min > 0 ? `проверка каждые ${channels.data.interval_min} мин` : 'автоматическая проверка выключена (CHANNEL_SYNC_MIN=0)')
   }
 

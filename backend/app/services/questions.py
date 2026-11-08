@@ -145,9 +145,14 @@ async def list_answers(session: AsyncSession, vacancy_id: int, limit: int = 5) -
 async def request_answers(
     session: AsyncSession, settings: Settings, row: Vacancy, text: str
 ) -> tuple[QuestionAnswers, str | None]:
-    """Queues an `answer_questions` task for the vacancy and tries to build a packet right away."""
+    """Queues an `answer_questions` task for the vacancy and tries to build a packet right away. A vacancy closed on
+    hh.ru takes no response, so its form needs no answers (409)."""
     from app.exchange.packets import PacketError, build_batches
 
+    if row.archived:
+        from app.services.vacancies import BACK_BY_LINK, CLOSED_ON_HH  # services.vacancies imports this module
+
+        raise QuestionsError(f"{CLOSED_ON_HH}, ответы на вопросы формы не нужны. {BACK_BY_LINK}", 409)
     questions = parse_questions(text)
     if not questions:
         raise QuestionsError("Не нашёл вопросов: вставьте текст формы отклика, по вопросу на абзац", 422)

@@ -131,6 +131,19 @@ describe('VacanciesPage', () => {
     expect(JSON.parse(localStorage.getItem(FILTERS_KEY) ?? '{}').min_score).toBe('')
   })
 
+  it('says how many candidates are new in the right word form', async () => {
+    for (const [n, text] of [
+      [21, '21 новый'],
+      [2, '2 новых'],
+      [11, '11 новых'],
+    ] as const) {
+      stubApi({ '/api/vacancies/hidden-employers': [], '/api/vacancies': { ...EMPTY_LIST, counts: counts({ candidates: 40, unseen_candidates: n, total: 40 }) } })
+      const { unmount } = renderAt('/vacancies', '/vacancies', <VacanciesPage />)
+      expect(await screen.findByText(`40 кандидатов · ${text}`)).toBeInTheDocument()
+      unmount()
+    }
+  })
+
   it('hides the old vacancies of other cities by default and says how many', async () => {
     const api = stubApi({
       '/api/vacancies/hidden-employers': [],
@@ -454,6 +467,87 @@ describe('VacancyDrawer actions', () => {
     renderAt('/vacancies?open=5', '/vacancies', <VacanciesPage />)
     expect(await screen.findByRole('button', { name: 'Вернуть в кандидаты' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'В пакет для Claude' })).toBeInTheDocument()
+  })
+
+  // a letter of Claude and the answers to the employer's questions, as the backend gives them
+  const LETTER = {
+    id: 9,
+    version: 1,
+    text: 'Здравствуйте! Пишу по вакансии Python-разработчика.',
+    language: 'ru',
+    char_count: 50,
+    origin: 'claude' as const,
+    batch_id: null,
+    mentions: [],
+    needs_clarification: [],
+    warnings: [],
+    is_current: true,
+    status: 'ready',
+    created_at: '2026-11-07T10:00:00+00:00',
+    send_problems: [],
+  }
+  const ANSWERS = {
+    id: 4,
+    vacancy_id: 5,
+    questions: ['Какой у вас опыт с FastAPI?'],
+    status: 'done' as const,
+    status_label: 'готовы',
+    batch_id: '20261107_1000_abcd',
+    result: { answers: [{ question: 'Какой у вас опыт с FastAPI?', answer: 'Три года, платёжный сервис.', needs_clarification: [] }] },
+    error: null,
+    created_at: '2026-11-07T10:00:00+00:00',
+    updated_at: null,
+  }
+
+  it('asks nothing of Claude and offers no response or return for a vacancy closed on hh.ru', async () => {
+    const closed = { ...detail('filtered_out'), archived: true, prescore: 60, pipeline_reason: 'закрыта на hh.ru (архив)', letter: LETTER }
+    stubApi({ ...routes('filtered_out'), '/api/vacancies/5': closed })
+    const { unmount } = renderAt('/vacancies?open=5', '/vacancies', <VacanciesPage />)
+    expect(await screen.findByText('Закрыта на hh.ru: откликнуться на неё нельзя. Если её откроют снова, добавьте её по ссылке на hh.ru.')).toBeInTheDocument()
+    expect(screen.getByText('Причина: закрыта на hh.ru (архив).')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Оставить как кандидата' })).toBeNull()
+    expect(screen.queryByRole('button', { name: /В пакет для Claude/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Открыть отклик на hh\.ru|Откликнуться через API/ })).toBeNull()
+    // the letter stays readable, but Claude writes no new version and no answers to the form
+    expect(screen.getByRole('textbox', { name: 'Текст письма' })).toHaveValue(LETTER.text)
+    expect(screen.queryByRole('button', { name: 'Переделать в Claude…' })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Вопросы работодателя при отклике/ })).toBeNull()
+    unmount()
+
+    // filtered out by the rules, still open on hh.ru: everything stays
+    stubApi({ ...routes('filtered_out'), '/api/vacancies/5': { ...closed, archived: false, pipeline_reason: 'стоп-слово в названии' } })
+    renderAt('/vacancies?open=5', '/vacancies', <VacanciesPage />)
+    expect(await screen.findByRole('button', { name: 'Оставить как кандидата' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'В пакет для Claude' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Открыть отклик на hh\.ru|Откликнуться через API/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Переделать в Claude…' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Вопросы работодателя при отклике/ })).toBeInTheDocument()
+    expect(screen.queryByText(/^Закрыта на hh\.ru: откликнуться/)).toBeNull()
+  })
+
+  it('promises no letter from Claude for a closed vacancy without one', async () => {
+    // without a letter and an evaluation the card opens on «Описание»: the letter tab is one click away
+    stubApi({ ...routes('filtered_out'), '/api/vacancies/5': { ...detail('filtered_out'), archived: true, pipeline_reason: 'закрыта на hh.ru (архив)' } })
+    const { unmount } = renderAt('/vacancies?open=5', '/vacancies', <VacanciesPage />)
+    fireEvent.click(await screen.findByRole('tab', { name: 'Письмо' }))
+    expect(await screen.findByText('Письма нет: вакансия закрыта на hh.ru.')).toBeInTheDocument()
+    expect(screen.queryByText(/Claude напишет его при разборе/)).toBeNull()
+    unmount()
+
+    stubApi({ ...routes('filtered_out'), '/api/vacancies/5': { ...detail('filtered_out'), pipeline_reason: 'стоп-слово в названии' } })
+    renderAt('/vacancies?open=5', '/vacancies', <VacanciesPage />)
+    fireEvent.click(await screen.findByRole('tab', { name: 'Письмо' }))
+    expect(await screen.findByText(/^Письма ещё нет: Claude напишет его при разборе/)).toBeInTheDocument()
+  })
+
+  it('keeps the answers of a closed vacancy readable and asks for no new ones', async () => {
+    const closed = { ...detail('filtered_out'), archived: true, pipeline_reason: 'закрыта на hh.ru (архив)', letter: LETTER, question_answers: [ANSWERS] }
+    stubApi({ ...routes('filtered_out'), '/api/vacancies/5': closed })
+    renderAt('/vacancies?open=5', '/vacancies', <VacanciesPage />)
+    expect(await screen.findByText('Три года, платёжный сервис.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Вопросы работодателя при отклике/ })).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.queryByRole('button', { name: 'Запросить ответы' })).toBeNull()
+    expect(screen.queryByRole('textbox', { name: 'Вопросы работодателя' })).toBeNull()
   })
 
   it('shows the marks that change how to apply', async () => {
