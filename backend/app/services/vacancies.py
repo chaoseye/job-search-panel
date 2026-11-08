@@ -7,8 +7,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import Select, and_, case, desc, func, or_, select
+from sqlalchemy import Select, String, UnaryExpression, and_, case, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.expression import custom_op
 
 from app.config import Settings
 from app.db.base import as_utc, utcnow
@@ -157,6 +158,25 @@ def responses_condition(max_responses: int) -> Any:
     )
 
 
+# ---- the site filter of the tabs ----------------------------------------------------------------------------------
+# After hirehi.ru became the second source: how to tell the vacancies of hh.ru from those of
+# HireHi. The filter takes the site where the vacancy lives (`source`): a HireHi vacancy taken from hh.ru is a vacancy
+# of hh.ru (services/hirehi.route_to_hh), its HireHi row a skipped duplicate. A narrowing filter like the search that
+# found the vacancy: the counters of the tabs do not follow it.
+
+
+def source_condition(source: str) -> Any:
+    """Rows of one site (sources.SOURCES). `source` is in ix_vacancies_listing (0033), so the page of ids and its
+    counts stay on the covering index. The unary + is SQLite's way to keep a term from any index. Both are needed: a
+    plain `source = ?` sends the planner to ux_vacancies_source_id (source, source_id) — two values over the whole
+    table, it guesses fewer rows there than in six statuses and reads the row of every vacancy of hh.ru for a page of a
+    hundred candidates. Without the statistics of ANALYZE it does so whatever the listing index holds, with them while
+    `source` is not in it; and with the + but without `source` in the index the statistics make it scan the table
+    (test_performance.py checks the plans)."""
+    site = UnaryExpression(Vacancy.source.expression, operator=custom_op("+"), type_=String())
+    return site == source
+
+
 def scope_conditions(fresh: Freshness | None, max_responses: int | None) -> list[Any]:
     """The standing filters of the tabs (freshness, responses cap) as WHERE conditions — the list and every counter
     apply the same."""
@@ -302,10 +322,13 @@ def _apply_filters(
     experience: list[str] | None = None,
     fresh: Freshness | None = None,
     max_responses: int | None = None,
+    source: str | None = None,
 ) -> Select[Any]:
     statuses = GROUPS.get(group, CANDIDATE_STATUSES)
     for cond in scope_conditions(fresh, max_responses):
         stmt = stmt.where(cond)
+    if source is not None:
+        stmt = stmt.where(source_condition(source))
     if selection_profile_id is not None:
         # 0 = base questionnaire (NULL), otherwise the named set
         stmt = stmt.where(
@@ -366,6 +389,7 @@ async def list_vacancies(
     experience: list[str] | None = None,
     fresh_days: int | None = None,
     max_responses: int | None = None,
+    source: str | None = None,
 ) -> dict[str, Any]:
     fresh = await freshness(session, fresh_days)
     filters = dict(
@@ -382,6 +406,7 @@ async def list_vacancies(
         experience=experience,
         fresh=fresh,
         max_responses=max_responses,
+        source=source,
     )
 
     async def count(**over: Any) -> int:

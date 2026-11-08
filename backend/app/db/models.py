@@ -269,7 +269,8 @@ class Vacancy(TimestampMixin, Base):
         # covering indexes (migration 0021): the tab lists (ids of a page), the counters and the statistics by
         # first_seen_at never read the rows; the city (0030) — for the freshness filter of the tabs
         # (services/vacancies.Freshness.condition), on by default; the responses counter (0031) — for the responses
-        # cap (services/vacancies.responses_condition) and the sort «Меньше откликов»
+        # cap (services/vacancies.responses_condition) and the sort «Меньше откликов»; the site (0033) — for the
+        # filter «Сайт» (services/vacancies.source_condition)
         Index(
             "ix_vacancies_listing",
             "pipeline_status",
@@ -281,6 +282,7 @@ class Vacancy(TimestampMixin, Base):
             "published_at",
             "area_name",
             "responses_count",
+            "source",
         ),
         Index("ix_vacancies_first_seen", "first_seen_at", "rules_passed", "pipeline_status"),
         # one vacancy per number of a source (hh rows keep NULL here — the unique hh_id guards them)

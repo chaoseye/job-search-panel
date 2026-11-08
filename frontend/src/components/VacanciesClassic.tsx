@@ -2,7 +2,7 @@ import { Clock } from 'lucide-react'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { HiddenEmployer, SavedSearch, SelectionProfile, VacancyRow } from '../api/types'
 import { formatDateTime, shortAgo, shortDate } from '../lib/format'
-import { FRESH_DAYS, GROUPS, type Filters } from '../lib/vacancyFilters'
+import { FRESH_DAYS, GROUPS, SITES, type Filters } from '../lib/vacancyFilters'
 import {
   ATTENTION_GROUPS,
   EXPERIENCE_LEVELS,
@@ -18,6 +18,7 @@ import {
   rowFlags,
   salaryNet,
   salaryPublished,
+  SITE_HINT,
   SORTS,
   WORK_FORMATS,
 } from '../lib/vacancyView'
@@ -136,7 +137,8 @@ export function GroupButtons({ value, onChange, count }: { value: string; onChan
 }
 
 /** The groups and every filter, open in one panel. «Сбросить фильтры» keeps the group and the sort order, as the chips
- *  of the compact view do, turns the freshness filter back on and clears the responses cap (the defaults). */
+ *  of the compact view do, turns the freshness filter back on and clears the responses cap and the site (the
+ *  defaults). */
 export function ClassicFilters({
   filters,
   set,
@@ -167,8 +169,8 @@ export function ClassicFilters({
   return (
     <Panel bodyClassName="space-y-4">
       <GroupButtons value={filters.group} onChange={onGroup} count={count} />
-      {/* six columns from 1280 px, as before the redesign (search, the three lists; experience, region, salary, score,
-          sort); three on a narrower screen, where the menu takes the side */}
+      {/* six columns from 1280 px, as before the redesign (search, the lists — the site since HireHi; experience,
+          region, salary, score, sort); three on a narrower screen, where the menu takes the side */}
       <div className="grid items-start gap-3 md:grid-cols-3 xl:grid-cols-6">
         <Field label="Название или компания" className="md:col-span-3 xl:col-span-2">
           <SearchInput label="Поиск по названию или компании" placeholder="Например, аналитик" value={filters.q} onChange={(q) => set({ q })} className="w-full" />
@@ -179,6 +181,16 @@ export function ClassicFilters({
             {searches.map((s) => (
               <option key={s.id} value={s.id}>
                 {s.name}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        <Field label="Сайт">
+          {/* no room for a hint under it here: the tooltip says what «hh.ru» takes */}
+          <Select value={filters.source} onChange={(e) => set({ source: e.target.value })} title={SITE_HINT}>
+            {SITES.map(([id, label]) => (
+              <option key={id} value={id}>
+                {label}
               </option>
             ))}
           </Select>

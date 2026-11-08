@@ -5,7 +5,7 @@ import type { BadgeTone } from '../components/ui/Badge'
 import type { TrackStep } from '../components/ui/PipelineTrack'
 import { plural } from './format'
 import { currencySign, money } from './money'
-import { DEFAULT_FILTERS, FRESH_DAYS, GROUPS, type Filters } from './vacancyFilters'
+import { DEFAULT_FILTERS, FRESH_DAYS, GROUPS, SITES, type Filters } from './vacancyFilters'
 
 /** hh experience levels; the filter keeps any combination (a comma-separated list in the query and in saved filters). */
 export const EXPERIENCE_LEVELS: [string, string][] = [
@@ -84,6 +84,10 @@ export function siteOf(v: { source?: string | null; source_label?: string | null
 export function isHireHi(v: { source?: string | null } | null | undefined): boolean {
   return v?.source === 'hirehi'
 }
+
+/** The filter «Сайт» takes the site where the vacancy lives: one HireHi took from hh.ru is found on hh.ru and handled
+ *  there, its HireHi row is a duplicate among the skipped ones. */
+export const SITE_HINT = 'Вакансия, которую HireHi взял с hh.ru, считается вакансией hh.ru.'
 
 /** UNAVAILABLE_HINT for the site of the vacancy. */
 export function unavailableHint(site: string): string {
@@ -297,6 +301,10 @@ export function filterChips(f: Filters, searches?: SavedSearch[], sets?: Selecti
   if (f.search_id) {
     const name = searches?.find((s) => String(s.id) === f.search_id)?.name ?? `№${f.search_id}`
     chips.push({ key: 'search', label: `Поиск: ${name}`, clear: (x) => ({ ...x, search_id: '' }) })
+  }
+  if (f.source) {
+    const name = SITES.find(([id]) => id === f.source)?.[1] ?? f.source
+    chips.push({ key: 'site', label: `Сайт: ${name}`, title: SITE_HINT, clear: (x) => ({ ...x, source: '' }) })
   }
   if (f.selection_profile_id) {
     const name = f.selection_profile_id === '0' ? 'основная анкета' : (sets?.find((s) => String(s.id) === f.selection_profile_id)?.name ?? `№${f.selection_profile_id}`)
